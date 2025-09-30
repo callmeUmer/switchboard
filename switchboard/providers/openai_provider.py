@@ -164,9 +164,9 @@ class OpenAIProvider(BaseProvider):
                 return self._parse_response(response_data, model)
 
         except httpx.TimeoutException:
-            raise ProviderError(f"OpenAI API request timed out after {timeout} seconds")
+            raise ProviderError("OpenAI API request timed out")
         except httpx.RequestError as e:
-            raise ProviderError(f"OpenAI API request failed: {e}")
+            raise ProviderError("OpenAI API request failed")
         except Exception as e:
             if isinstance(e, (ProviderError, ModelNotFoundError)):
                 raise

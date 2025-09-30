@@ -4,7 +4,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 
 from .exceptions import ConfigurationError
@@ -21,7 +21,8 @@ class ModelConfig(BaseModel):
     timeout: Optional[int] = Field(30, description="Request timeout in seconds")
     extra_params: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional provider-specific parameters")
 
-    @validator('temperature')
+    @field_validator('temperature')
+    @classmethod
     def validate_temperature(cls, v):
         if v is not None and (v < 0 or v > 2):
             raise ValueError('Temperature must be between 0 and 2')
@@ -46,18 +47,20 @@ class SwitchboardConfig(BaseModel):
     enable_caching: bool = Field(True, description="Enable response caching")
     cache_ttl: int = Field(3600, description="Cache TTL in seconds")
 
-    @validator('default_model')
-    def validate_default_model(cls, v, values):
-        if 'models' in values and v not in values['models']:
+    @field_validator('default_model')
+    @classmethod
+    def validate_default_model(cls, v, info):
+        if info.data and 'models' in info.data and v not in info.data['models']:
             raise ValueError(f'Default model "{v}" not found in models configuration')
         return v
 
-    @validator('tasks')
-    def validate_task_models(cls, v, values):
-        if 'models' not in values:
+    @field_validator('tasks')
+    @classmethod
+    def validate_task_models(cls, v, info):
+        if not info.data or 'models' not in info.data:
             return v
 
-        available_models = set(values['models'].keys())
+        available_models = set(info.data['models'].keys())
         for task_name, task_config in v.items():
             # Check primary model
             if task_config.primary_model not in available_models:

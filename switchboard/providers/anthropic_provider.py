@@ -165,9 +165,9 @@ class AnthropicProvider(BaseProvider):
                 return self._parse_response(response_data, model)
 
         except httpx.TimeoutException:
-            raise ProviderError(f"Anthropic API request timed out after {timeout} seconds")
+            raise ProviderError("Anthropic API request timed out")
         except httpx.RequestError as e:
-            raise ProviderError(f"Anthropic API request failed: {e}")
+            raise ProviderError("Anthropic API request failed")
         except Exception as e:
             if isinstance(e, (ProviderError, ModelNotFoundError)):
                 raise
