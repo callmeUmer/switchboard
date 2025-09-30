@@ -1,0 +1,59 @@
+# Production Configuration
+# Optimized for production with premium models and robust fallbacks
+
+models:
+  # Premium Models for Production
+  gpt-4:
+    provider: openai
+    model_name: gpt-4
+    api_key_env: OPENAI_API_KEY
+    max_tokens: 4096
+    temperature: 0.5  # Lower temperature for consistency
+    timeout: 90
+
+  claude-3-opus:
+    provider: anthropic
+    model_name: claude-3-opus-20240229
+    api_key_env: ANTHROPIC_API_KEY
+    max_tokens: 4096
+    temperature: 0.5
+    timeout: 90
+
+  gpt-3.5-turbo:
+    provider: openai
+    model_name: gpt-3.5-turbo
+    api_key_env: OPENAI_API_KEY
+    max_tokens: 4096
+    temperature: 0.5
+    timeout: 30
+
+  claude-3-sonnet:
+    provider: anthropic
+    model_name: claude-3-sonnet-20240229
+    api_key_env: ANTHROPIC_API_KEY
+    max_tokens: 4096
+    temperature: 0.5
+    timeout: 60
+
+tasks:
+  # Production tasks with comprehensive fallback chains
+  coding:
+    primary_model: gpt-4
+    fallback_models: [claude-3-opus, gpt-3.5-turbo, claude-3-sonnet]
+    description: "Production code generation and analysis"
+
+  analysis:
+    primary_model: claude-3-opus
+    fallback_models: [gpt-4, claude-3-sonnet, gpt-3.5-turbo]
+    description: "Critical analysis and decision making"
+
+  customer_support:
+    primary_model: claude-3-sonnet
+    fallback_models: [gpt-3.5-turbo, claude-3-opus]
+    description: "Customer-facing interactions"
+
+default_model: gpt-4
+default_fallback: [claude-3-opus, gpt-3.5-turbo, claude-3-sonnet]
+
+enable_caching: true
+cache_ttl: 7200  # 2 hours for production stability
