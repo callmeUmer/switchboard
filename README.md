@@ -18,7 +18,7 @@ Switchboard is a Python library that provides a unified API for switching betwee
 ### Installation
 
 ```bash
-pip install switchboard
+pip install switchboard-ai
 ```
 
 ### Basic Usage
