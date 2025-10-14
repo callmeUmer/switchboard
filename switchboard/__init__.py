@@ -1,16 +1,16 @@
 """Switchboard: Config-driven AI model switching made simple."""
 
-from .__version__ import __version__, __author__, __email__, __description__
+from .__version__ import __author__, __description__, __email__, __version__
 from .client import Client
 from .exceptions import (
-    SwitchboardError,
+    APIKeyError,
     ConfigurationError,
+    FallbackExhaustedError,
     ModelNotFoundError,
+    ModelResponseError,
     ProviderError,
     ProviderNotFoundError,
-    APIKeyError,
-    ModelResponseError,
-    FallbackExhaustedError,
+    SwitchboardError,
 )
 
 __all__ = [

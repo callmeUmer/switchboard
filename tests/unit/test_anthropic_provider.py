@@ -1,12 +1,13 @@
 """Unit tests for Anthropic provider."""
 
-import pytest
-from unittest.mock import Mock, AsyncMock, patch
-import httpx
+from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
+import pytest
+
+from switchboard.exceptions import ModelNotFoundError, ProviderError
 from switchboard.providers.anthropic_provider import AnthropicProvider
 from switchboard.providers.base import CompletionResponse
-from switchboard.exceptions import ProviderError, ModelNotFoundError
 
 
 class TestAnthropicProvider:
@@ -26,7 +27,7 @@ class TestAnthropicProvider:
         provider = AnthropicProvider(
             api_key="test-key",
             base_url="https://custom.anthropic.com",
-            anthropic_version="2024-01-01"
+            anthropic_version="2024-01-01",
         )
 
         assert provider.base_url == "https://custom.anthropic.com"
@@ -50,7 +51,9 @@ class TestAnthropicProvider:
 
     def test_no_api_key_error(self):
         """Test error when no API key provided."""
-        with pytest.raises(ProviderError, match="anthropic provider requires an API key"):
+        with pytest.raises(
+            ProviderError, match="anthropic provider requires an API key"
+        ):
             AnthropicProvider()
 
     def test_get_headers(self):
@@ -61,17 +64,14 @@ class TestAnthropicProvider:
         expected = {
             "x-api-key": "test-key",
             "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
         }
 
         assert headers == expected
 
     def test_get_headers_custom_version(self):
         """Test getting headers with custom version."""
-        provider = AnthropicProvider(
-            api_key="test-key",
-            anthropic_version="2024-01-01"
-        )
+        provider = AnthropicProvider(api_key="test-key", anthropic_version="2024-01-01")
         headers = provider._get_headers()
 
         assert headers["anthropic-version"] == "2024-01-01"
@@ -84,7 +84,7 @@ class TestAnthropicProvider:
         expected = {
             "model": "claude-3-haiku-20240307",
             "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 4096
+            "max_tokens": 4096,
         }
 
         assert data == expected
@@ -97,7 +97,7 @@ class TestAnthropicProvider:
             "claude-3-opus-20240229",
             max_tokens=1000,
             temperature=0.5,
-            custom_param="value"
+            custom_param="value",
         )
 
         expected = {
@@ -105,7 +105,7 @@ class TestAnthropicProvider:
             "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 1000,
             "temperature": 0.5,
-            "custom_param": "value"
+            "custom_param": "value",
         }
 
         assert data == expected
@@ -114,13 +114,17 @@ class TestAnthropicProvider:
         """Test preparing request data with unsupported model."""
         provider = AnthropicProvider(api_key="test-key")
 
-        with pytest.raises(ModelNotFoundError, match="Model 'unsupported' is not supported"):
+        with pytest.raises(
+            ModelNotFoundError, match="Model 'unsupported' is not supported"
+        ):
             provider._prepare_request_data("Hello", "unsupported")
 
     def test_parse_response_success(self, mock_anthropic_response):
         """Test parsing successful Anthropic response."""
         provider = AnthropicProvider(api_key="test-key")
-        response = provider._parse_response(mock_anthropic_response, "claude-3-haiku-20240307")
+        response = provider._parse_response(
+            mock_anthropic_response, "claude-3-haiku-20240307"
+        )
 
         assert isinstance(response, CompletionResponse)
         assert response.content == "This is a test response from Anthropic"
@@ -134,7 +138,7 @@ class TestAnthropicProvider:
         provider = AnthropicProvider(api_key="test-key")
         legacy_response = {
             "completion": "Legacy response format",
-            "usage": {"input_tokens": 10, "output_tokens": 5}
+            "usage": {"input_tokens": 10, "output_tokens": 5},
         }
 
         response = provider._parse_response(legacy_response, "claude-2.1")
@@ -147,7 +151,9 @@ class TestAnthropicProvider:
         provider = AnthropicProvider(api_key="test-key")
         invalid_response = {"invalid": "format"}
 
-        with pytest.raises(ProviderError, match="Invalid response format from Anthropic"):
+        with pytest.raises(
+            ProviderError, match="Invalid response format from Anthropic"
+        ):
             provider._parse_response(invalid_response, "claude-3-haiku-20240307")
 
     @pytest.mark.asyncio
@@ -155,14 +161,16 @@ class TestAnthropicProvider:
         """Test successful completion."""
         provider = AnthropicProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_anthropic_response
 
             mock_client_instance = Mock()
             mock_client_instance.post = AsyncMock(return_value=mock_response)
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -170,7 +178,7 @@ class TestAnthropicProvider:
                 "Test prompt",
                 "claude-3-haiku-20240307",
                 max_tokens=100,
-                temperature=0.7
+                temperature=0.7,
             )
 
             assert isinstance(response, CompletionResponse)
@@ -190,11 +198,11 @@ class TestAnthropicProvider:
             (401, "Invalid Anthropic API key"),
             (429, "Anthropic rate limit exceeded"),
             (400, "Anthropic API error"),
-            (500, "Anthropic API error: 500")
+            (500, "Anthropic API error: 500"),
         ]
 
         for status_code, expected_error in error_cases:
-            with patch('httpx.AsyncClient') as mock_client:
+            with patch("httpx.AsyncClient") as mock_client:
                 mock_response = Mock()
                 mock_response.status_code = status_code
                 mock_response.text = "Error message"
@@ -205,7 +213,9 @@ class TestAnthropicProvider:
 
                 mock_client_instance = Mock()
                 mock_client_instance.post = AsyncMock(return_value=mock_response)
-                mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+                mock_client_instance.__aenter__ = AsyncMock(
+                    return_value=mock_client_instance
+                )
                 mock_client_instance.__aexit__ = AsyncMock()
                 mock_client.return_value = mock_client_instance
 
@@ -217,10 +227,14 @@ class TestAnthropicProvider:
         """Test completion with timeout."""
         provider = AnthropicProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
-            mock_client_instance.post = AsyncMock(side_effect=httpx.TimeoutException("Timeout"))
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.post = AsyncMock(
+                side_effect=httpx.TimeoutException("Timeout")
+            )
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -232,10 +246,14 @@ class TestAnthropicProvider:
         """Test completion with request error."""
         provider = AnthropicProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
-            mock_client_instance.post = AsyncMock(side_effect=httpx.RequestError("Network error"))
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.post = AsyncMock(
+                side_effect=httpx.RequestError("Network error")
+            )
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -263,14 +281,16 @@ class TestAnthropicProvider:
         """Test successful health check."""
         provider = AnthropicProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_anthropic_response
 
             mock_client_instance = Mock()
             mock_client_instance.post = AsyncMock(return_value=mock_response)
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -282,10 +302,12 @@ class TestAnthropicProvider:
         """Test failed health check."""
         provider = AnthropicProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
             mock_client_instance.post = AsyncMock(side_effect=Exception("API Error"))
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 

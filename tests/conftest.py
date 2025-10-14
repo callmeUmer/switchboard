@@ -2,12 +2,12 @@
 
 import os
 import tempfile
-import yaml
 from pathlib import Path
-from typing import Dict, Any
-from unittest.mock import Mock, AsyncMock
+from typing import Any, Dict
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+import yaml
 
 from switchboard.config import ConfigManager, SwitchboardConfig
 from switchboard.providers.base import BaseProvider, CompletionResponse
@@ -32,7 +32,7 @@ def sample_config_data():
                 "api_key_env": "TEST_API_KEY",
                 "max_tokens": 100,
                 "temperature": 0.7,
-                "timeout": 30
+                "timeout": 30,
             },
             "test-model-2": {
                 "provider": "test",
@@ -40,7 +40,7 @@ def sample_config_data():
                 "api_key_env": "TEST_API_KEY",
                 "max_tokens": 200,
                 "temperature": 0.5,
-                "timeout": 60
+                "timeout": 60,
             },
             "openai-model": {
                 "provider": "openai",
@@ -48,25 +48,25 @@ def sample_config_data():
                 "api_key_env": "OPENAI_API_KEY",
                 "max_tokens": 4096,
                 "temperature": 0.7,
-                "timeout": 30
-            }
+                "timeout": 30,
+            },
         },
         "tasks": {
             "test-task": {
                 "primary_model": "test-model-1",
                 "fallback_models": ["test-model-2"],
-                "description": "Test task"
+                "description": "Test task",
             },
             "coding": {
                 "primary_model": "openai-model",
                 "fallback_models": ["test-model-1"],
-                "description": "Coding tasks"
-            }
+                "description": "Coding tasks",
+            },
         },
         "default_model": "test-model-1",
         "default_fallback": ["test-model-2"],
         "enable_caching": True,
-        "cache_ttl": 3600
+        "cache_ttl": 3600,
     }
 
 
@@ -74,7 +74,7 @@ def sample_config_data():
 def config_file(temp_dir, sample_config_data):
     """Create a temporary config file."""
     config_path = temp_dir / "test_config.yaml"
-    with open(config_path, 'w') as f:
+    with open(config_path, "w") as f:
         yaml.dump(sample_config_data, f)
     return config_path
 
@@ -108,7 +108,7 @@ def mock_completion_response():
         provider="test",
         timestamp=pytest.mock_datetime.now(),
         usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
-        metadata={"test": "data"}
+        metadata={"test": "data"},
     )
 
 
@@ -133,7 +133,9 @@ class MockProvider(BaseProvider):
     def requires_api_key(self) -> bool:
         return True
 
-    async def complete(self, prompt, model, max_tokens=None, temperature=None, timeout=None, **kwargs):
+    async def complete(
+        self, prompt, model, max_tokens=None, temperature=None, timeout=None, **kwargs
+    ):
         self.call_count += 1
         self.last_params = {
             "prompt": prompt,
@@ -141,23 +143,25 @@ class MockProvider(BaseProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
             "timeout": timeout,
-            **kwargs
+            **kwargs,
         }
 
         if self.should_fail:
             raise Exception("Mock provider failure")
 
         from datetime import datetime
+
         return CompletionResponse(
             content=self.response_content,
             model=model,
             provider=self.name,
             timestamp=datetime.now(),
-            usage={"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}
+            usage={"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
         )
 
+
 # Make MockProvider available at module level for registration
-__all__ = ['MockProvider']
+__all__ = ["MockProvider"]
 
 
 @pytest.fixture
@@ -205,7 +209,7 @@ def mock_httpx_client(monkeypatch):
         "usage": {"prompt_tokens": 10, "completion_tokens": 15, "total_tokens": 25},
         "id": "test-id",
         "object": "chat.completion",
-        "created": 1234567890
+        "created": 1234567890,
     }
 
     async def mock_post(*args, **kwargs):
@@ -216,6 +220,7 @@ def mock_httpx_client(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     import httpx
+
     monkeypatch.setattr(httpx, "AsyncClient", lambda: mock_client)
 
     return mock_client, mock_response
@@ -234,16 +239,12 @@ def mock_openai_response():
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": "This is a test response from OpenAI"
+                    "content": "This is a test response from OpenAI",
                 },
-                "finish_reason": "stop"
+                "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": 20,
-            "completion_tokens": 10,
-            "total_tokens": 30
-        }
+        "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
     }
 
 
@@ -254,19 +255,11 @@ def mock_anthropic_response():
         "id": "msg_test123",
         "type": "message",
         "role": "assistant",
-        "content": [
-            {
-                "type": "text",
-                "text": "This is a test response from Anthropic"
-            }
-        ],
+        "content": [{"type": "text", "text": "This is a test response from Anthropic"}],
         "model": "claude-3-haiku-20240307",
         "stop_reason": "end_turn",
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": 25,
-            "output_tokens": 12
-        }
+        "usage": {"input_tokens": 25, "output_tokens": 12},
     }
 
 
@@ -275,6 +268,7 @@ def mock_anthropic_response():
 def event_loop():
     """Create an event loop for async tests."""
     import asyncio
+
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()

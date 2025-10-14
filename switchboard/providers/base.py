@@ -1,9 +1,9 @@
 """Base provider interface for AI models."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from ..exceptions import ProviderError
 
@@ -65,7 +65,7 @@ class BaseProvider(ABC):
         """
         if self.requires_api_key() and not self.api_key:
             # Get provider name safely without calling abstract property during init
-            provider_name = self.__class__.__name__.replace('Provider', '').lower()
+            provider_name = self.__class__.__name__.replace("Provider", "").lower()
             raise ProviderError(f"{provider_name} provider requires an API key")
 
     def requires_api_key(self) -> bool:
@@ -84,7 +84,7 @@ class BaseProvider(ABC):
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         timeout: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> CompletionResponse:
         """Generate completion for the given prompt.
 
@@ -111,7 +111,7 @@ class BaseProvider(ABC):
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         timeout: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> CompletionResponse:
         """Synchronous completion wrapper.
 
@@ -132,10 +132,13 @@ class BaseProvider(ABC):
             loop = asyncio.get_running_loop()
             # Already in an event loop, run in thread pool
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(
                     asyncio.run,
-                    self.complete(prompt, model, max_tokens, temperature, timeout, **kwargs)
+                    self.complete(
+                        prompt, model, max_tokens, temperature, timeout, **kwargs
+                    ),
                 )
                 return future.result(timeout=timeout or 60)
         except RuntimeError:
@@ -182,7 +185,7 @@ class BaseProvider(ABC):
                 prompt="Hello",
                 model=self.supported_models[0] if self.supported_models else "",
                 max_tokens=1,
-                timeout=10
+                timeout=10,
             )
             return bool(response.content)
         except Exception:

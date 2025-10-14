@@ -1,12 +1,13 @@
 """Unit tests for OpenAI provider."""
 
-import pytest
-from unittest.mock import Mock, AsyncMock, patch
-import httpx
+from unittest.mock import AsyncMock, Mock, patch
 
-from switchboard.providers.openai_provider import OpenAIProvider
+import httpx
+import pytest
+
+from switchboard.exceptions import ModelNotFoundError, ProviderError
 from switchboard.providers.base import CompletionResponse
-from switchboard.exceptions import ProviderError, ModelNotFoundError
+from switchboard.providers.openai_provider import OpenAIProvider
 
 
 class TestOpenAIProvider:
@@ -26,7 +27,7 @@ class TestOpenAIProvider:
         provider = OpenAIProvider(
             api_key="test-key",
             base_url="https://custom.openai.com/v1",
-            organization="org-123"
+            organization="org-123",
         )
 
         assert provider.base_url == "https://custom.openai.com/v1"
@@ -59,7 +60,7 @@ class TestOpenAIProvider:
 
         expected = {
             "Authorization": "Bearer test-key",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
         assert headers == expected
@@ -78,7 +79,7 @@ class TestOpenAIProvider:
 
         expected = {
             "model": "gpt-3.5-turbo",
-            "messages": [{"role": "user", "content": "Hello"}]
+            "messages": [{"role": "user", "content": "Hello"}],
         }
 
         assert data == expected
@@ -87,11 +88,7 @@ class TestOpenAIProvider:
         """Test preparing request data with parameters."""
         provider = OpenAIProvider(api_key="test-key")
         data = provider._prepare_request_data(
-            "Hello",
-            "gpt-4",
-            max_tokens=100,
-            temperature=0.5,
-            custom_param="value"
+            "Hello", "gpt-4", max_tokens=100, temperature=0.5, custom_param="value"
         )
 
         expected = {
@@ -99,7 +96,7 @@ class TestOpenAIProvider:
             "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 100,
             "temperature": 0.5,
-            "custom_param": "value"
+            "custom_param": "value",
         }
 
         assert data == expected
@@ -108,7 +105,9 @@ class TestOpenAIProvider:
         """Test preparing request data with unsupported model."""
         provider = OpenAIProvider(api_key="test-key")
 
-        with pytest.raises(ModelNotFoundError, match="Model 'unsupported' is not supported"):
+        with pytest.raises(
+            ModelNotFoundError, match="Model 'unsupported' is not supported"
+        ):
             provider._prepare_request_data("Hello", "unsupported")
 
     def test_parse_response_success(self, mock_openai_response):
@@ -136,22 +135,21 @@ class TestOpenAIProvider:
         """Test successful completion."""
         provider = OpenAIProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_openai_response
 
             mock_client_instance = Mock()
             mock_client_instance.post = AsyncMock(return_value=mock_response)
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
             response = await provider.complete(
-                "Test prompt",
-                "gpt-3.5-turbo",
-                max_tokens=100,
-                temperature=0.7
+                "Test prompt", "gpt-3.5-turbo", max_tokens=100, temperature=0.7
             )
 
             assert isinstance(response, CompletionResponse)
@@ -171,11 +169,11 @@ class TestOpenAIProvider:
             (401, "Invalid OpenAI API key"),
             (429, "OpenAI rate limit exceeded"),
             (400, "OpenAI API error"),
-            (500, "OpenAI API error: 500")
+            (500, "OpenAI API error: 500"),
         ]
 
         for status_code, expected_error in error_cases:
-            with patch('httpx.AsyncClient') as mock_client:
+            with patch("httpx.AsyncClient") as mock_client:
                 mock_response = Mock()
                 mock_response.status_code = status_code
                 mock_response.text = "Error message"
@@ -186,7 +184,9 @@ class TestOpenAIProvider:
 
                 mock_client_instance = Mock()
                 mock_client_instance.post = AsyncMock(return_value=mock_response)
-                mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+                mock_client_instance.__aenter__ = AsyncMock(
+                    return_value=mock_client_instance
+                )
                 mock_client_instance.__aexit__ = AsyncMock()
                 mock_client.return_value = mock_client_instance
 
@@ -198,10 +198,14 @@ class TestOpenAIProvider:
         """Test completion with timeout."""
         provider = OpenAIProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
-            mock_client_instance.post = AsyncMock(side_effect=httpx.TimeoutException("Timeout"))
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.post = AsyncMock(
+                side_effect=httpx.TimeoutException("Timeout")
+            )
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -213,10 +217,14 @@ class TestOpenAIProvider:
         """Test completion with request error."""
         provider = OpenAIProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
-            mock_client_instance.post = AsyncMock(side_effect=httpx.RequestError("Network error"))
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.post = AsyncMock(
+                side_effect=httpx.RequestError("Network error")
+            )
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -243,14 +251,16 @@ class TestOpenAIProvider:
         """Test successful health check."""
         provider = OpenAIProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_openai_response
 
             mock_client_instance = Mock()
             mock_client_instance.post = AsyncMock(return_value=mock_response)
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 
@@ -262,10 +272,12 @@ class TestOpenAIProvider:
         """Test failed health check."""
         provider = OpenAIProvider(api_key="test-key")
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
             mock_client_instance.post = AsyncMock(side_effect=Exception("API Error"))
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
             mock_client_instance.__aexit__ = AsyncMock()
             mock_client.return_value = mock_client_instance
 

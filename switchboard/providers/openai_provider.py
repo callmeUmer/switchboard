@@ -1,18 +1,20 @@
 """OpenAI provider implementation."""
 
-import httpx
 import logging
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import httpx
 
 try:
     from openai import OpenAI
+
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
 
+from ..exceptions import ModelNotFoundError, ProviderError
 from .base import BaseProvider, CompletionResponse
-from ..exceptions import ProviderError, ModelNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +30,21 @@ class OpenAIProvider(BaseProvider):
             **kwargs: Additional configuration
         """
         super().__init__(api_key, **kwargs)
-        self.base_url = kwargs.get('base_url', 'https://api.openai.com/v1')
-        self.organization = kwargs.get('organization')
+        self.base_url = kwargs.get("base_url", "https://api.openai.com/v1")
+        self.organization = kwargs.get("organization")
         self._cached_models: Optional[List[str]] = None
 
         # Validate API key format
         if api_key and not self._is_valid_api_key_format(api_key):
-            logger.warning("OpenAI API key format appears invalid. Expected format: sk-...")
+            logger.warning(
+                "OpenAI API key format appears invalid. Expected format: sk-..."
+            )
 
         # Initialize OpenAI client if library is available
         if OPENAI_AVAILABLE:
-            self._client = OpenAI(api_key=api_key, base_url=self.base_url, organization=self.organization)
+            self._client = OpenAI(
+                api_key=api_key, base_url=self.base_url, organization=self.organization
+            )
         else:
             self._client = None
             logger.debug("OpenAI library not available, using httpx for API calls")
@@ -69,7 +75,9 @@ class OpenAIProvider(BaseProvider):
             ProviderError: If unable to fetch models from API
         """
         if not OPENAI_AVAILABLE or not self._client:
-            logger.error("OpenAI library not available. Install with: pip install openai")
+            logger.error(
+                "OpenAI library not available. Install with: pip install openai"
+            )
             raise ProviderError(
                 "OpenAI library not available. Install it with: pip install openai"
             )
@@ -110,7 +118,7 @@ class OpenAIProvider(BaseProvider):
         model: str,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Prepare request data for OpenAI API.
 
@@ -140,7 +148,9 @@ class OpenAIProvider(BaseProvider):
 
         return data
 
-    def _parse_response(self, response_data: Dict[str, Any], model: str) -> CompletionResponse:
+    def _parse_response(
+        self, response_data: Dict[str, Any], model: str
+    ) -> CompletionResponse:
         """Parse OpenAI API response."""
         try:
             content = response_data["choices"][0]["message"]["content"]
@@ -157,7 +167,7 @@ class OpenAIProvider(BaseProvider):
                     "object": response_data.get("object"),
                     "created": response_data.get("created"),
                     "finish_reason": response_data["choices"][0].get("finish_reason"),
-                }
+                },
             )
 
         except (KeyError, IndexError) as e:
@@ -170,7 +180,7 @@ class OpenAIProvider(BaseProvider):
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         timeout: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> CompletionResponse:
         """Generate completion using OpenAI API.
 
@@ -201,7 +211,7 @@ class OpenAIProvider(BaseProvider):
                     f"{self.base_url}/chat/completions",
                     headers=self._get_headers(),
                     json=request_data,
-                    timeout=timeout or 30
+                    timeout=timeout or 30,
                 )
 
                 if response.status_code == 401:
@@ -219,14 +229,21 @@ class OpenAIProvider(BaseProvider):
                     error_data = response.json().get("error", {})
                     error_msg = error_data.get("message", "Bad request")
                     # Check if it's a model-related error
-                    if "model" in error_msg.lower() and "does not exist" in error_msg.lower():
+                    if (
+                        "model" in error_msg.lower()
+                        and "does not exist" in error_msg.lower()
+                    ):
                         logger.error(f"Model does not exist: {error_msg}")
                         raise ModelNotFoundError(f"OpenAI: {error_msg}")
                     logger.error(f"Bad request to OpenAI API: {error_msg}")
                     raise ProviderError(f"OpenAI API error: {error_msg}")
                 elif response.status_code != 200:
-                    logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                    raise ProviderError(f"OpenAI API error: {response.status_code} - {response.text}")
+                    logger.error(
+                        f"OpenAI API error: {response.status_code} - {response.text}"
+                    )
+                    raise ProviderError(
+                        f"OpenAI API error: {response.status_code} - {response.text}"
+                    )
 
                 response_data = response.json()
                 logger.debug(f"Completion request successful for model: {model}")
@@ -252,11 +269,13 @@ class OpenAIProvider(BaseProvider):
         if OPENAI_AVAILABLE and self._client:
             try:
                 model_data = self._client.models.retrieve(model)
-                base_info.update({
-                    "id": model_data.id,
-                    "created": model_data.created,
-                    "owned_by": model_data.owned_by,
-                })
+                base_info.update(
+                    {
+                        "id": model_data.id,
+                        "created": model_data.created,
+                        "owned_by": model_data.owned_by,
+                    }
+                )
             except Exception:
                 # If we can't fetch details, just return base info
                 pass
@@ -287,10 +306,7 @@ class OpenAIProvider(BaseProvider):
 
             # Simple test with minimal tokens
             response = await self.complete(
-                prompt="Hi",
-                model=test_model,
-                max_tokens=1,
-                timeout=10
+                prompt="Hi", model=test_model, max_tokens=1, timeout=10
             )
             return bool(response.content)
         except Exception as e:

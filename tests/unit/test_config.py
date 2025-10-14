@@ -2,18 +2,19 @@
 
 import os
 import tempfile
+from pathlib import Path
+from unittest.mock import mock_open, patch
+
 import pytest
 import yaml
-from pathlib import Path
-from unittest.mock import patch, mock_open
 
 from switchboard.config import (
-    ModelConfig,
-    TaskConfig,
-    SwitchboardConfig,
     ConfigManager,
+    ModelConfig,
+    SwitchboardConfig,
+    TaskConfig,
     get_config_manager,
-    load_config
+    load_config,
 )
 from switchboard.exceptions import ConfigurationError
 
@@ -28,7 +29,7 @@ class TestModelConfig:
             model_name="gpt-4",
             api_key_env="OPENAI_API_KEY",
             max_tokens=4096,
-            temperature=0.7
+            temperature=0.7,
         )
 
         assert config.provider == "openai"
@@ -39,10 +40,7 @@ class TestModelConfig:
 
     def test_model_config_defaults(self):
         """Test ModelConfig with default values."""
-        config = ModelConfig(
-            provider="test",
-            model_name="test-model"
-        )
+        config = ModelConfig(provider="test", model_name="test-model")
 
         assert config.provider == "test"
         assert config.model_name == "test-model"
@@ -55,25 +53,17 @@ class TestModelConfig:
     def test_model_config_invalid_temperature(self):
         """Test ModelConfig with invalid temperature."""
         with pytest.raises(ValueError, match="Temperature must be between 0 and 2"):
-            ModelConfig(
-                provider="test",
-                model_name="test-model",
-                temperature=3.0
-            )
+            ModelConfig(provider="test", model_name="test-model", temperature=3.0)
 
         with pytest.raises(ValueError, match="Temperature must be between 0 and 2"):
-            ModelConfig(
-                provider="test",
-                model_name="test-model",
-                temperature=-0.1
-            )
+            ModelConfig(provider="test", model_name="test-model", temperature=-0.1)
 
     def test_model_config_extra_params(self):
         """Test ModelConfig with extra parameters."""
         config = ModelConfig(
             provider="test",
             model_name="test-model",
-            extra_params={"custom_param": "value"}
+            extra_params={"custom_param": "value"},
         )
 
         assert config.extra_params == {"custom_param": "value"}
@@ -87,7 +77,7 @@ class TestTaskConfig:
         config = TaskConfig(
             primary_model="gpt-4",
             fallback_models=["gpt-3.5-turbo", "claude-3-haiku"],
-            description="Test task"
+            description="Test task",
         )
 
         assert config.primary_model == "gpt-4"
@@ -121,10 +111,12 @@ class TestSwitchboardConfig:
         """Test SwitchboardConfig with invalid default model."""
         config_data = {
             "models": {"test-model": {"provider": "test", "model_name": "test"}},
-            "default_model": "nonexistent-model"
+            "default_model": "nonexistent-model",
         }
 
-        with pytest.raises(ValueError, match='Default model "nonexistent-model" not found'):
+        with pytest.raises(
+            ValueError, match='Default model "nonexistent-model" not found'
+        ):
             SwitchboardConfig(**config_data)
 
     def test_switchboard_config_invalid_task_model(self):
@@ -134,13 +126,16 @@ class TestSwitchboardConfig:
             "tasks": {
                 "test-task": {
                     "primary_model": "nonexistent-model",
-                    "fallback_models": []
+                    "fallback_models": [],
                 }
             },
-            "default_model": "test-model"
+            "default_model": "test-model",
         }
 
-        with pytest.raises(ValueError, match='Primary model "nonexistent-model" for task "test-task" not found'):
+        with pytest.raises(
+            ValueError,
+            match='Primary model "nonexistent-model" for task "test-task" not found',
+        ):
             SwitchboardConfig(**config_data)
 
     def test_switchboard_config_invalid_fallback_model(self):
@@ -150,13 +145,16 @@ class TestSwitchboardConfig:
             "tasks": {
                 "test-task": {
                     "primary_model": "test-model",
-                    "fallback_models": ["nonexistent-model"]
+                    "fallback_models": ["nonexistent-model"],
                 }
             },
-            "default_model": "test-model"
+            "default_model": "test-model",
         }
 
-        with pytest.raises(ValueError, match='Fallback model "nonexistent-model" for task "test-task" not found'):
+        with pytest.raises(
+            ValueError,
+            match='Fallback model "nonexistent-model" for task "test-task" not found',
+        ):
             SwitchboardConfig(**config_data)
 
 
@@ -186,7 +184,7 @@ class TestConfigManager:
     def test_config_manager_invalid_yaml(self, temp_dir):
         """Test ConfigManager with invalid YAML."""
         invalid_config = temp_dir / "invalid.yaml"
-        with open(invalid_config, 'w') as f:
+        with open(invalid_config, "w") as f:
             f.write("invalid: yaml: content:\n  - bad")
 
         manager = ConfigManager(invalid_config)
@@ -237,7 +235,9 @@ class TestConfigManager:
         config_manager.load_config()
         model_config = config_manager.get_model_config("test-model-1")
 
-        with pytest.raises(ConfigurationError, match="API key not found in environment variable"):
+        with pytest.raises(
+            ConfigurationError, match="API key not found in environment variable"
+        ):
             config_manager.get_api_key(model_config)
 
     def test_config_manager_no_api_key_env(self, config_manager):
@@ -260,10 +260,10 @@ class TestConfigManager:
         """Test finding config in standard locations."""
         # Create config in current directory
         config_path = temp_dir / "switchboard.yaml"
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             yaml.dump({"models": {}, "default_model": "test"}, f)
 
-        with patch('pathlib.Path.cwd', return_value=temp_dir):
+        with patch("pathlib.Path.cwd", return_value=temp_dir):
             manager = ConfigManager()
             assert manager.config_path.name == "switchboard.yaml"
 
@@ -283,7 +283,7 @@ class TestGlobalFunctions:
         """Test getting config manager with new path."""
         # Create another config file
         config_file2 = temp_dir / "config2.yaml"
-        with open(config_file2, 'w') as f:
+        with open(config_file2, "w") as f:
             yaml.dump({"models": {}, "default_model": "test"}, f)
 
         manager1 = get_config_manager(config_file)

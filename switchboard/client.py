@@ -1,18 +1,17 @@
-
 """Main client for Switchboard AI model switching."""
 
-from typing import Optional, Union, List, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
-from .config import ConfigManager, get_config_manager, ModelConfig
-from .providers import get_provider, CompletionResponse
+from .config import ConfigManager, ModelConfig, get_config_manager
 from .exceptions import (
-    SwitchboardError,
+    APIKeyError,
     ConfigurationError,
     ModelNotFoundError,
     ProviderNotFoundError,
-    APIKeyError
+    SwitchboardError,
 )
+from .providers import CompletionResponse, get_provider
 
 
 class Client:
@@ -37,7 +36,7 @@ class Client:
         prompt: str,
         model: Optional[str] = None,
         task: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> CompletionResponse:
         """Generate completion using configured models.
 
@@ -84,9 +83,7 @@ class Client:
 
                 # Execute completion
                 return attempt_provider.complete_sync(
-                    prompt=prompt,
-                    model=attempt_config.model_name,
-                    **attempt_params
+                    prompt=prompt, model=attempt_config.model_name, **attempt_params
                 )
 
             except Exception as e:
@@ -99,6 +96,7 @@ class Client:
 
         # All models failed
         from .exceptions import FallbackExhaustedError
+
         raise FallbackExhaustedError(
             f"All fallback models failed. Last error: {last_error}"
         ) from last_error
@@ -108,7 +106,7 @@ class Client:
         prompt: str,
         model: Optional[str] = None,
         task: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> CompletionResponse:
         """Async version of complete method.
 
@@ -150,9 +148,7 @@ class Client:
 
                 # Execute async completion
                 return await attempt_provider.complete(
-                    prompt=prompt,
-                    model=attempt_config.model_name,
-                    **attempt_params
+                    prompt=prompt, model=attempt_config.model_name, **attempt_params
                 )
 
             except Exception as e:
@@ -165,6 +161,7 @@ class Client:
 
         # All models failed
         from .exceptions import FallbackExhaustedError
+
         raise FallbackExhaustedError(
             f"All fallback models failed. Last error: {last_error}"
         ) from last_error
@@ -223,7 +220,7 @@ class Client:
 
         Args:
             model_config: Model configuration
-        
+
         Returns:
             Provider instance
 
@@ -239,7 +236,7 @@ class Client:
             provider = get_provider(
                 provider_name=model_config.provider,
                 api_key=api_key,
-                **model_config.extra_params
+                **model_config.extra_params,
             )
 
             return provider
@@ -249,12 +246,12 @@ class Client:
             raise
         except Exception as e:
             # Wrap unknown exceptions
-            raise SwitchboardError(f"Failed to get provider '{model_config.provider}': {e}") from e
+            raise SwitchboardError(
+                f"Failed to get provider '{model_config.provider}': {e}"
+            ) from e
 
     def _prepare_completion_params(
-        self,
-        model_config: ModelConfig,
-        kwargs: Dict[str, Any]
+        self, model_config: ModelConfig, kwargs: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Prepare parameters for completion call.
 
@@ -342,12 +339,16 @@ class Client:
                 # Simple sync health check
                 try:
                     import asyncio
+
                     try:
                         loop = asyncio.get_running_loop()
                         # Already in an event loop, create a task
                         import concurrent.futures
+
                         with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, provider.health_check())
+                            future = executor.submit(
+                                asyncio.run, provider.health_check()
+                            )
                             health = future.result(timeout=15)
                     except RuntimeError:
                         # No running loop, safe to use asyncio.run

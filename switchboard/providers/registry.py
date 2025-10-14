@@ -1,8 +1,9 @@
 """Provider registry for managing available providers."""
 
-from typing import Dict, Type, Optional, List, Any
+from typing import Any, Dict, List, Optional, Type
+
+from ..exceptions import ProviderError, ProviderNotFoundError
 from .base import BaseProvider
-from ..exceptions import ProviderNotFoundError, ProviderError
 
 
 class ProviderRegistry:
@@ -28,7 +29,9 @@ class ProviderRegistry:
             )
 
         # Get provider name from class
-        if hasattr(provider_class, 'name') and isinstance(getattr(provider_class, 'name'), property):
+        if hasattr(provider_class, "name") and isinstance(
+            getattr(provider_class, "name"), property
+        ):
             # Create temporary instance to get the name property value
             try:
                 # Try creating with dummy API key first for providers that require it
@@ -41,11 +44,13 @@ class ProviderRegistry:
                     provider_name = temp_instance.name
                 except Exception:
                     # Fallback to class name if instantiation fails
-                    provider_name = provider_class.__name__.lower().replace('provider', '')
-        elif hasattr(provider_class, 'name'):
+                    provider_name = provider_class.__name__.lower().replace(
+                        "provider", ""
+                    )
+        elif hasattr(provider_class, "name"):
             provider_name = provider_class.name
         else:
-            provider_name = provider_class.__name__.lower().replace('provider', '')
+            provider_name = provider_class.__name__.lower().replace("provider", "")
 
         if provider_name in self._providers:
             raise ProviderError(f"Provider '{provider_name}' is already registered")
@@ -73,10 +78,7 @@ class ProviderRegistry:
         return self._providers[provider_name]
 
     def create_provider(
-        self,
-        provider_name: str,
-        api_key: Optional[str] = None,
-        **kwargs
+        self, provider_name: str, api_key: Optional[str] = None, **kwargs
     ) -> BaseProvider:
         """Create and configure a provider instance.
 
@@ -97,13 +99,12 @@ class ProviderRegistry:
         try:
             return provider_class(api_key=api_key, **kwargs)
         except Exception as e:
-            raise ProviderError(f"Failed to create provider '{provider_name}': {e}") from e
+            raise ProviderError(
+                f"Failed to create provider '{provider_name}': {e}"
+            ) from e
 
     def get_or_create_provider(
-        self,
-        provider_name: str,
-        api_key: Optional[str] = None,
-        **kwargs
+        self, provider_name: str, api_key: Optional[str] = None, **kwargs
     ) -> BaseProvider:
         """Get cached provider instance or create new one.
 
@@ -176,7 +177,9 @@ class ProviderRegistry:
         del self._providers[provider_name]
 
         # Clear related cached instances (handles new cache key format with api_key_hash)
-        keys_to_remove = [key for key in self._instances.keys() if key.split(':')[0] == provider_name]
+        keys_to_remove = [
+            key for key in self._instances.keys() if key.split(":")[0] == provider_name
+        ]
         for key in keys_to_remove:
             del self._instances[key]
 
@@ -194,7 +197,7 @@ class ProviderRegistry:
         # Try to get supported models (might need instantiation)
         try:
             # For providers that require API key, use a dummy key for info gathering
-            if hasattr(provider_class, 'requires_api_key'):
+            if hasattr(provider_class, "requires_api_key"):
                 try:
                     temp_requires_api_key = provider_class().requires_api_key()
                 except Exception:
@@ -234,9 +237,7 @@ def register_provider(provider_class: Type[BaseProvider]) -> None:
 
 
 def get_provider(
-    provider_name: str,
-    api_key: Optional[str] = None,
-    **kwargs
+    provider_name: str, api_key: Optional[str] = None, **kwargs
 ) -> BaseProvider:
     """Get a provider instance from the global registry.
 

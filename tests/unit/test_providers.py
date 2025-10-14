@@ -1,12 +1,18 @@
 """Unit tests for provider system."""
 
-import pytest
 from datetime import datetime
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from switchboard.providers.base import BaseProvider, CompletionResponse
-from switchboard.providers.registry import ProviderRegistry, register_provider, get_provider
+import pytest
+
 from switchboard.exceptions import ProviderError, ProviderNotFoundError
+from switchboard.providers.base import BaseProvider, CompletionResponse
+from switchboard.providers.registry import (
+    ProviderRegistry,
+    get_provider,
+    register_provider,
+)
+
 from ..conftest import MockProvider
 
 
@@ -22,7 +28,7 @@ class TestCompletionResponse:
             provider="test-provider",
             timestamp=timestamp,
             usage={"tokens": 10},
-            metadata={"id": "test-id"}
+            metadata={"id": "test-id"},
         )
 
         assert response.content == "Test response"
@@ -39,7 +45,7 @@ class TestCompletionResponse:
             content="Test response",
             model="test-model",
             provider="test-provider",
-            timestamp=timestamp
+            timestamp=timestamp,
         )
 
         result = response.to_dict()
@@ -50,7 +56,7 @@ class TestCompletionResponse:
             "provider": "test-provider",
             "timestamp": "2024-01-01T12:00:00",
             "usage": None,
-            "metadata": None
+            "metadata": None,
         }
 
         assert result == expected
@@ -70,12 +76,20 @@ class TestBaseProvider:
         def supported_models(self):
             return ["test-model-1", "test-model-2"]
 
-        async def complete(self, prompt, model, max_tokens=None, temperature=None, timeout=None, **kwargs):
+        async def complete(
+            self,
+            prompt,
+            model,
+            max_tokens=None,
+            temperature=None,
+            timeout=None,
+            **kwargs,
+        ):
             return CompletionResponse(
                 content=f"Response to: {prompt}",
                 model=model,
                 provider=self.name,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
             )
 
     def test_base_provider_creation(self):
@@ -89,9 +103,7 @@ class TestBaseProvider:
     def test_base_provider_with_config(self):
         """Test creating BaseProvider with additional config."""
         provider = self.ConcreteProvider(
-            api_key="test-key",
-            custom_param="value",
-            base_url="https://api.example.com"
+            api_key="test-key", custom_param="value", base_url="https://api.example.com"
         )
 
         assert provider.api_key == "test-key"
@@ -105,6 +117,7 @@ class TestBaseProvider:
 
     def test_base_provider_no_api_key_required(self):
         """Test provider that doesn't require API key."""
+
         class NoAPIKeyProvider(self.ConcreteProvider):
             def requires_api_key(self):
                 return False
@@ -125,11 +138,7 @@ class TestBaseProvider:
         provider = self.ConcreteProvider(api_key="test")
         info = provider.get_model_info("test-model-1")
 
-        expected = {
-            "provider": "test",
-            "model": "test-model-1",
-            "supported": True
-        }
+        expected = {"provider": "test", "model": "test-model-1", "supported": True}
 
         assert info == expected
 
@@ -163,6 +172,7 @@ class TestBaseProvider:
     @pytest.mark.asyncio
     async def test_health_check_failure(self):
         """Test failed health check."""
+
         class FailingProvider(self.ConcreteProvider):
             async def complete(self, prompt, model, **kwargs):
                 raise Exception("Provider failure")
@@ -192,6 +202,7 @@ class TestProviderRegistry:
 
     def test_register_provider(self, clean_registry):
         """Test registering a provider."""
+
         class TestProvider(BaseProvider):
             @property
             def name(self):
@@ -201,7 +212,15 @@ class TestProviderRegistry:
             def supported_models(self):
                 return ["test-model"]
 
-            async def complete(self, prompt, model, max_tokens=None, temperature=None, timeout=None, **kwargs):
+            async def complete(
+                self,
+                prompt,
+                model,
+                max_tokens=None,
+                temperature=None,
+                timeout=None,
+                **kwargs,
+            ):
                 pass
 
         clean_registry.register(TestProvider)
@@ -211,14 +230,18 @@ class TestProviderRegistry:
 
     def test_register_invalid_provider(self, clean_registry):
         """Test registering invalid provider."""
+
         class NotAProvider:
             pass
 
-        with pytest.raises(ProviderError, match="Provider class must inherit from BaseProvider"):
+        with pytest.raises(
+            ProviderError, match="Provider class must inherit from BaseProvider"
+        ):
             clean_registry.register(NotAProvider)
 
     def test_register_duplicate_provider(self, clean_registry):
         """Test registering duplicate provider."""
+
         class TestProvider(BaseProvider):
             @property
             def name(self):
@@ -228,16 +251,27 @@ class TestProviderRegistry:
             def supported_models(self):
                 return ["test-model"]
 
-            async def complete(self, prompt, model, max_tokens=None, temperature=None, timeout=None, **kwargs):
+            async def complete(
+                self,
+                prompt,
+                model,
+                max_tokens=None,
+                temperature=None,
+                timeout=None,
+                **kwargs,
+            ):
                 pass
 
         clean_registry.register(TestProvider)
 
-        with pytest.raises(ProviderError, match="Provider 'test' is already registered"):
+        with pytest.raises(
+            ProviderError, match="Provider 'test' is already registered"
+        ):
             clean_registry.register(TestProvider)
 
     def test_get_provider_class(self, clean_registry):
         """Test getting provider class."""
+
         class TestProvider(BaseProvider):
             @property
             def name(self):
@@ -247,7 +281,15 @@ class TestProviderRegistry:
             def supported_models(self):
                 return ["test-model"]
 
-            async def complete(self, prompt, model, max_tokens=None, temperature=None, timeout=None, **kwargs):
+            async def complete(
+                self,
+                prompt,
+                model,
+                max_tokens=None,
+                temperature=None,
+                timeout=None,
+                **kwargs,
+            ):
                 pass
 
         clean_registry.register(TestProvider)
@@ -257,7 +299,9 @@ class TestProviderRegistry:
 
     def test_get_nonexistent_provider_class(self, clean_registry):
         """Test getting nonexistent provider class."""
-        with pytest.raises(ProviderNotFoundError, match="Provider 'nonexistent' not found"):
+        with pytest.raises(
+            ProviderNotFoundError, match="Provider 'nonexistent' not found"
+        ):
             clean_registry.get_provider_class("nonexistent")
 
     def test_create_provider(self, clean_registry, mock_provider):
@@ -272,9 +316,7 @@ class TestProviderRegistry:
         """Test creating provider with additional config."""
         clean_registry.register(MockProvider)
         provider = clean_registry.create_provider(
-            "test",
-            api_key="test-key",
-            custom_param="value"
+            "test", api_key="test-key", custom_param="value"
         )
 
         assert provider.config["custom_param"] == "value"
@@ -336,7 +378,9 @@ class TestProviderRegistry:
 
     def test_unregister_nonexistent_provider(self, clean_registry):
         """Test unregistering nonexistent provider."""
-        with pytest.raises(ProviderNotFoundError, match="Provider 'nonexistent' not found"):
+        with pytest.raises(
+            ProviderNotFoundError, match="Provider 'nonexistent' not found"
+        ):
             clean_registry.unregister("nonexistent")
 
     def test_get_provider_info(self, clean_registry):

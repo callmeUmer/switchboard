@@ -1,18 +1,19 @@
 """Unit tests for Switchboard client."""
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from switchboard.client import Client
-from switchboard.providers.base import CompletionResponse
 from switchboard.exceptions import (
-    SwitchboardError,
+    APIKeyError,
     ConfigurationError,
     ModelNotFoundError,
     ProviderNotFoundError,
-    APIKeyError
+    SwitchboardError,
 )
+from switchboard.providers.base import CompletionResponse
 
 
 class TestClient:
@@ -27,7 +28,7 @@ class TestClient:
 
     def test_client_creation_no_config(self):
         """Test creating Client without config path."""
-        with patch('switchboard.client.get_config_manager') as mock_get_manager:
+        with patch("switchboard.client.get_config_manager") as mock_get_manager:
             mock_manager = Mock()
             mock_get_manager.return_value = mock_manager
 
@@ -80,7 +81,9 @@ class TestClient:
         model = client._resolve_model(None, "nonexistent-task")
         assert model == "test-model-1"  # Falls back to default
 
-    def test_get_provider_success(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_get_provider_success(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test successfully getting provider."""
         client = Client(config_file)
         client._ensure_config_loaded()
@@ -125,12 +128,14 @@ class TestClient:
             "max_tokens": 100,
             "temperature": 0.9,  # kwargs override config
             "timeout": 30,
-            "custom_param": "value"
+            "custom_param": "value",
         }
 
         assert params == expected
 
-    def test_complete_success(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_complete_success(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test successful completion."""
         client = Client(config_file)
 
@@ -140,7 +145,9 @@ class TestClient:
         assert response.content == "Mock response"
         assert response.provider == "test"
 
-    def test_complete_with_task(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_complete_with_task(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test completion with task routing."""
         client = Client(config_file)
 
@@ -149,37 +156,44 @@ class TestClient:
         assert isinstance(response, CompletionResponse)
         # Should use test-task's primary model (test-model-1)
 
-    def test_complete_with_kwargs(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_complete_with_kwargs(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test completion with additional parameters."""
         client = Client(config_file)
 
         response = client.complete(
-            "Test prompt",
-            model="test-model-1",
-            temperature=0.5,
-            max_tokens=50
+            "Test prompt", model="test-model-1", temperature=0.5, max_tokens=50
         )
 
         assert isinstance(response, CompletionResponse)
 
         # Check that provider received the parameters
-        provider = registered_mock_provider.get_or_create_provider("test", api_key="test-api-key-12345")
+        provider = registered_mock_provider.get_or_create_provider(
+            "test", api_key="test-api-key-12345"
+        )
         assert provider.last_params["temperature"] == 0.5
         assert provider.last_params["max_tokens"] == 50
 
-    def test_complete_provider_failure(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_complete_provider_failure(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test completion with provider failure."""
         client = Client(config_file)
 
         # Make provider fail
-        provider = registered_mock_provider.get_or_create_provider("test", api_key="test-api-key-12345")
+        provider = registered_mock_provider.get_or_create_provider(
+            "test", api_key="test-api-key-12345"
+        )
         provider.should_fail = True
 
         with pytest.raises(SwitchboardError, match="Completion failed"):
             client.complete("Test prompt", model="test-model-1")
 
     @pytest.mark.asyncio
-    async def test_complete_async_success(self, config_file, mock_env_vars, registered_mock_provider):
+    async def test_complete_async_success(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test successful async completion."""
         client = Client(config_file)
 
@@ -189,12 +203,16 @@ class TestClient:
         assert response.content == "Mock response"
 
     @pytest.mark.asyncio
-    async def test_complete_async_failure(self, config_file, mock_env_vars, registered_mock_provider):
+    async def test_complete_async_failure(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test async completion with failure."""
         client = Client(config_file)
 
         # Make provider fail
-        provider = registered_mock_provider.get_or_create_provider("test", api_key="test-api-key-12345")
+        provider = registered_mock_provider.get_or_create_provider(
+            "test", api_key="test-api-key-12345"
+        )
         provider.should_fail = True
 
         with pytest.raises(SwitchboardError, match="Async completion failed"):
@@ -249,7 +267,9 @@ class TestClient:
         assert client._config is not original_config
         assert client._config.default_model == original_config.default_model
 
-    def test_health_check_single_model(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_health_check_single_model(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test health check for single model."""
         client = Client(config_file)
 
@@ -258,7 +278,9 @@ class TestClient:
         assert "test-model-1" in results
         assert results["test-model-1"] is True
 
-    def test_health_check_all_models(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_health_check_all_models(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test health check for all models."""
         client = Client(config_file)
 
@@ -268,12 +290,16 @@ class TestClient:
         assert "test-model-2" in results
         # openai-model will fail health check due to missing provider
 
-    def test_health_check_failing_model(self, config_file, mock_env_vars, registered_mock_provider):
+    def test_health_check_failing_model(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
         """Test health check with failing model."""
         client = Client(config_file)
 
         # Make provider fail
-        provider = registered_mock_provider.get_or_create_provider("test", api_key="test-api-key-12345")
+        provider = registered_mock_provider.get_or_create_provider(
+            "test", api_key="test-api-key-12345"
+        )
         provider.should_fail = True
 
         results = client.health_check("test-model-1")
