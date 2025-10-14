@@ -1,6 +1,6 @@
 """Provider registry for managing available providers."""
 
-from typing import Dict, Type, Optional, List
+from typing import Dict, Type, Optional, List, Any
 from .base import BaseProvider
 from ..exceptions import ProviderNotFoundError, ProviderError
 
@@ -97,7 +97,7 @@ class ProviderRegistry:
         try:
             return provider_class(api_key=api_key, **kwargs)
         except Exception as e:
-            raise ProviderError(f"Failed to create provider '{provider_name}': {e}")
+            raise ProviderError(f"Failed to create provider '{provider_name}': {e}") from e
 
     def get_or_create_provider(
         self,
@@ -115,8 +115,21 @@ class ProviderRegistry:
         Returns:
             Provider instance
         """
-        # Create cache key from provider name and config
-        cache_key = f"{provider_name}:{hash(str(sorted((api_key or '', *kwargs.items()))))}"
+        # Create cache key from provider name, api_key, and config
+        # Use frozenset for stable, hashable representation
+        import hashlib
+
+        # Include API key in cache key (hash it for security)
+        api_key_hash = ""
+        if api_key:
+            api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+        config_items = sorted(kwargs.items())
+        config_str = str(config_items)
+        config_hash = hashlib.sha256(config_str.encode()).hexdigest()[:16]
+
+        # Cache key now includes API key hash to prevent sharing providers with different keys
+        cache_key = f"{provider_name}:{api_key_hash}:{config_hash}"
 
         if cache_key not in self._instances:
             self._instances[cache_key] = self.create_provider(
@@ -162,12 +175,12 @@ class ProviderRegistry:
 
         del self._providers[provider_name]
 
-        # Clear related cached instances
-        keys_to_remove = [key for key in self._instances.keys() if key.startswith(f"{provider_name}:")]
+        # Clear related cached instances (handles new cache key format with api_key_hash)
+        keys_to_remove = [key for key in self._instances.keys() if key.split(':')[0] == provider_name]
         for key in keys_to_remove:
             del self._instances[key]
 
-    def get_provider_info(self, provider_name: str) -> Dict[str, any]:
+    def get_provider_info(self, provider_name: str) -> Dict[str, Any]:
         """Get information about a registered provider.
 
         Args:

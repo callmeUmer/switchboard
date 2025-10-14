@@ -1,11 +1,20 @@
 """OpenAI provider implementation."""
 
 import httpx
+import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 from .base import BaseProvider, CompletionResponse
 from ..exceptions import ProviderError, ModelNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(BaseProvider):
@@ -21,26 +30,67 @@ class OpenAIProvider(BaseProvider):
         super().__init__(api_key, **kwargs)
         self.base_url = kwargs.get('base_url', 'https://api.openai.com/v1')
         self.organization = kwargs.get('organization')
+        self._cached_models: Optional[List[str]] = None
+
+        # Validate API key format
+        if api_key and not self._is_valid_api_key_format(api_key):
+            logger.warning("OpenAI API key format appears invalid. Expected format: sk-...")
+
+        # Initialize OpenAI client if library is available
+        if OPENAI_AVAILABLE:
+            self._client = OpenAI(api_key=api_key, base_url=self.base_url, organization=self.organization)
+        else:
+            self._client = None
+            logger.debug("OpenAI library not available, using httpx for API calls")
 
     @property
     def name(self) -> str:
         """Provider name identifier."""
         return "openai"
 
+    def _is_valid_api_key_format(self, api_key: str) -> bool:
+        """Validate OpenAI API key format.
+
+        Args:
+            api_key: API key to validate
+
+        Returns:
+            True if format appears valid, False otherwise
+        """
+        return api_key.startswith("sk-") and len(api_key) > 20
+
+    def _fetch_available_models(self) -> List[str]:
+        """Fetch available models from OpenAI API.
+
+        Returns:
+            List of available model IDs from OpenAI API
+
+        Raises:
+            ProviderError: If unable to fetch models from API
+        """
+        if not OPENAI_AVAILABLE or not self._client:
+            logger.error("OpenAI library not available. Install with: pip install openai")
+            raise ProviderError(
+                "OpenAI library not available. Install it with: pip install openai"
+            )
+
+        try:
+            models_response = self._client.models.list()
+            # Get all model IDs - let the user decide which models to use
+            model_ids = [model.id for model in models_response.data]
+            logger.debug(f"Fetched {len(model_ids)} models from OpenAI API")
+            return sorted(model_ids)
+
+        except Exception as e:
+            logger.error(f"Failed to fetch models from OpenAI API: {e}")
+            raise ProviderError(f"Failed to fetch models from OpenAI API: {e}") from e
+
     @property
     def supported_models(self) -> List[str]:
-        """List of supported OpenAI models."""
-        return [
-            "gpt-4",
-            "gpt-4-turbo",
-            "gpt-4-turbo-preview",
-            "gpt-4-0125-preview",
-            "gpt-4-1106-preview",
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-0125",
-            "gpt-3.5-turbo-1106",
-            "gpt-3.5-turbo-instruct",
-        ]
+        """List of supported OpenAI models fetched dynamically from API."""
+        if self._cached_models is None:
+            self._cached_models = self._fetch_available_models()
+        return self._cached_models
 
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers for OpenAI API."""
@@ -62,10 +112,12 @@ class OpenAIProvider(BaseProvider):
         temperature: Optional[float] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """Prepare request data for OpenAI API."""
-        if not self.is_model_supported(model):
-            raise ModelNotFoundError(f"Model '{model}' is not supported by OpenAI provider")
+        """Prepare request data for OpenAI API.
 
+        Note: Model validation is done by OpenAI API directly.
+        This allows users to use any model name, including newly released models
+        that may not be in the cached model list yet.
+        """
         # Build messages for chat completion
         messages = [{"role": "user", "content": prompt}]
 
@@ -137,6 +189,8 @@ class OpenAIProvider(BaseProvider):
             ProviderError: If API request fails
             ModelNotFoundError: If model is not supported
         """
+        logger.debug(f"Starting completion request for model: {model}")
+
         try:
             request_data = self._prepare_request_data(
                 prompt, model, max_tokens, temperature, **kwargs
@@ -151,55 +205,94 @@ class OpenAIProvider(BaseProvider):
                 )
 
                 if response.status_code == 401:
+                    logger.error("Authentication failed with OpenAI API")
                     raise ProviderError("Invalid OpenAI API key")
                 elif response.status_code == 429:
+                    logger.warning("Rate limit exceeded for OpenAI API")
                     raise ProviderError("OpenAI rate limit exceeded")
+                elif response.status_code == 404:
+                    error_data = response.json().get("error", {})
+                    error_msg = error_data.get("message", f"Model '{model}' not found")
+                    logger.error(f"Model not found: {error_msg}")
+                    raise ModelNotFoundError(f"OpenAI: {error_msg}")
                 elif response.status_code == 400:
-                    error_detail = response.json().get("error", {}).get("message", "Bad request")
-                    raise ProviderError(f"OpenAI API error: {error_detail}")
+                    error_data = response.json().get("error", {})
+                    error_msg = error_data.get("message", "Bad request")
+                    # Check if it's a model-related error
+                    if "model" in error_msg.lower() and "does not exist" in error_msg.lower():
+                        logger.error(f"Model does not exist: {error_msg}")
+                        raise ModelNotFoundError(f"OpenAI: {error_msg}")
+                    logger.error(f"Bad request to OpenAI API: {error_msg}")
+                    raise ProviderError(f"OpenAI API error: {error_msg}")
                 elif response.status_code != 200:
+                    logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
                     raise ProviderError(f"OpenAI API error: {response.status_code} - {response.text}")
 
                 response_data = response.json()
+                logger.debug(f"Completion request successful for model: {model}")
                 return self._parse_response(response_data, model)
 
-        except httpx.TimeoutException:
-            raise ProviderError("OpenAI API request timed out")
+        except httpx.TimeoutException as e:
+            logger.error(f"OpenAI API request timed out after {timeout or 30} seconds")
+            raise ProviderError("OpenAI API request timed out") from e
         except httpx.RequestError as e:
-            raise ProviderError("OpenAI API request failed")
+            logger.error(f"OpenAI API request failed: {e}")
+            raise ProviderError(f"OpenAI API request failed: {e}") from e
         except Exception as e:
             if isinstance(e, (ProviderError, ModelNotFoundError)):
                 raise
-            raise ProviderError(f"Unexpected error in OpenAI provider: {e}")
+            logger.error(f"Unexpected error in OpenAI provider: {e}")
+            raise ProviderError(f"Unexpected error in OpenAI provider: {e}") from e
 
     def get_model_info(self, model: str) -> Dict[str, Any]:
         """Get information about an OpenAI model."""
         base_info = super().get_model_info(model)
 
-        # Add OpenAI-specific model information
-        model_specs = {
-            "gpt-4": {"context_length": 8192, "training_data": "Up to Sep 2021"},
-            "gpt-4-turbo": {"context_length": 128000, "training_data": "Up to Apr 2023"},
-            "gpt-4-turbo-preview": {"context_length": 128000, "training_data": "Up to Apr 2023"},
-            "gpt-3.5-turbo": {"context_length": 4096, "training_data": "Up to Sep 2021"},
-            "gpt-3.5-turbo-0125": {"context_length": 16385, "training_data": "Up to Sep 2021"},
-        }
-
-        if model in model_specs:
-            base_info.update(model_specs[model])
+        # Fetch model details from OpenAI API if available
+        if OPENAI_AVAILABLE and self._client:
+            try:
+                model_data = self._client.models.retrieve(model)
+                base_info.update({
+                    "id": model_data.id,
+                    "created": model_data.created,
+                    "owned_by": model_data.owned_by,
+                })
+            except Exception:
+                # If we can't fetch details, just return base info
+                pass
 
         return base_info
 
     async def health_check(self) -> bool:
         """Check if OpenAI provider is healthy."""
         try:
+            # Use the first available model for health check
+            if not self.supported_models:
+                logger.warning("No supported models available for health check")
+                return False
+
+            # Try to use a known stable, fast model for health checks
+            preferred_models = ["gpt-3.5-turbo", "gpt-4o-mini", "gpt-4"]
+            test_model = None
+
+            for preferred in preferred_models:
+                if preferred in self.supported_models:
+                    test_model = preferred
+                    break
+
+            if not test_model:
+                test_model = self.supported_models[0]
+
+            logger.debug(f"Running health check with model: {test_model}")
+
             # Simple test with minimal tokens
             response = await self.complete(
                 prompt="Hi",
-                model="gpt-3.5-turbo",
+                model=test_model,
                 max_tokens=1,
                 timeout=10
             )
             return bool(response.content)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Health check failed: {e}")
             return False

@@ -64,7 +64,9 @@ class BaseProvider(ABC):
             ProviderError: If configuration is invalid
         """
         if self.requires_api_key() and not self.api_key:
-            raise ProviderError(f"{self.name} provider requires an API key")
+            # Get provider name safely without calling abstract property during init
+            provider_name = self.__class__.__name__.replace('Provider', '').lower()
+            raise ProviderError(f"{provider_name} provider requires an API key")
 
     def requires_api_key(self) -> bool:
         """Whether this provider requires an API key.
@@ -127,14 +129,20 @@ class BaseProvider(ABC):
         import asyncio
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            # Already in an event loop, run in thread pool
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.complete(prompt, model, max_tokens, temperature, timeout, **kwargs)
+                )
+                return future.result(timeout=timeout or 60)
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        return loop.run_until_complete(
-            self.complete(prompt, model, max_tokens, temperature, timeout, **kwargs)
-        )
+            # No running loop, safe to use asyncio.run
+            return asyncio.run(
+                self.complete(prompt, model, max_tokens, temperature, timeout, **kwargs)
+            )
 
     def is_model_supported(self, model: str) -> bool:
         """Check if model is supported by this provider.

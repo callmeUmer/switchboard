@@ -69,16 +69,39 @@ class Client:
         # Merge configuration with kwargs
         completion_params = self._prepare_completion_params(model_config, kwargs)
 
-        try:
-            # Execute completion
-            return provider.complete_sync(
-                prompt=prompt,
-                model=model_config.model_name,
-                **completion_params
-            )
+        # Attempt completion with fallback support
+        models_to_try = self._get_fallback_chain(target_model, task)
+        last_error = None
 
-        except Exception as e:
-            raise SwitchboardError(f"Completion failed for model '{target_model}': {e}")
+        for attempt_model in models_to_try:
+            try:
+                # Get configuration for this model
+                attempt_config = self.config_manager.get_model_config(attempt_model)
+                attempt_provider = self._get_provider(attempt_config)
+
+                # Merge configuration with kwargs
+                attempt_params = self._prepare_completion_params(attempt_config, kwargs)
+
+                # Execute completion
+                return attempt_provider.complete_sync(
+                    prompt=prompt,
+                    model=attempt_config.model_name,
+                    **attempt_params
+                )
+
+            except Exception as e:
+                last_error = e
+                # If this was the last model to try, raise FallbackExhaustedError
+                if attempt_model == models_to_try[-1]:
+                    break
+                # Otherwise, continue to next fallback
+                continue
+
+        # All models failed
+        from .exceptions import FallbackExhaustedError
+        raise FallbackExhaustedError(
+            f"All fallback models failed. Last error: {last_error}"
+        ) from last_error
 
     async def complete_async(
         self,
@@ -112,16 +135,39 @@ class Client:
         # Merge configuration with kwargs
         completion_params = self._prepare_completion_params(model_config, kwargs)
 
-        try:
-            # Execute async completion
-            return await provider.complete(
-                prompt=prompt,
-                model=model_config.model_name,
-                **completion_params
-            )
+        # Attempt completion with fallback support
+        models_to_try = self._get_fallback_chain(target_model, task)
+        last_error = None
 
-        except Exception as e:
-            raise SwitchboardError(f"Async completion failed for model '{target_model}': {e}")
+        for attempt_model in models_to_try:
+            try:
+                # Get configuration for this model
+                attempt_config = self.config_manager.get_model_config(attempt_model)
+                attempt_provider = self._get_provider(attempt_config)
+
+                # Merge configuration with kwargs
+                attempt_params = self._prepare_completion_params(attempt_config, kwargs)
+
+                # Execute async completion
+                return await attempt_provider.complete(
+                    prompt=prompt,
+                    model=attempt_config.model_name,
+                    **attempt_params
+                )
+
+            except Exception as e:
+                last_error = e
+                # If this was the last model to try, raise FallbackExhaustedError
+                if attempt_model == models_to_try[-1]:
+                    break
+                # Otherwise, continue to next fallback
+                continue
+
+        # All models failed
+        from .exceptions import FallbackExhaustedError
+        raise FallbackExhaustedError(
+            f"All fallback models failed. Last error: {last_error}"
+        ) from last_error
 
     def _resolve_model(self, model: Optional[str], task: Optional[str]) -> str:
         """Resolve which model to use based on input parameters.
@@ -144,12 +190,40 @@ class Client:
         # Fall back to default model
         return self._config.default_model
 
+    def _get_fallback_chain(self, model: str, task: Optional[str]) -> List[str]:
+        """Get the fallback chain for a model.
+
+        Args:
+            model: Primary model name
+            task: Task type (if specified)
+
+        Returns:
+            List of models to try in order (primary first, then fallbacks)
+        """
+        chain = [model]
+
+        # If task is specified and has fallback models, use those
+        if task:
+            task_config = self.config_manager.get_task_config(task)
+            if task_config and task_config.fallback_models:
+                chain.extend(task_config.fallback_models)
+                return chain
+
+        # Otherwise use default fallback chain
+        if self._config.default_fallback:
+            # Only add fallback models that aren't already in the chain
+            for fallback_model in self._config.default_fallback:
+                if fallback_model not in chain:
+                    chain.append(fallback_model)
+
+        return chain
+
     def _get_provider(self, model_config: ModelConfig):
         """Get provider instance for the given model configuration.
 
         Args:
             model_config: Model configuration
-
+        
         Returns:
             Provider instance
 
@@ -170,13 +244,12 @@ class Client:
 
             return provider
 
+        except (ConfigurationError, APIKeyError, ProviderNotFoundError):
+            # Re-raise known exceptions as-is
+            raise
         except Exception as e:
-            if "API key" in str(e):
-                raise APIKeyError(str(e))
-            elif "Provider" in str(e) and "not found" in str(e):
-                raise ProviderNotFoundError(str(e))
-            else:
-                raise
+            # Wrap unknown exceptions
+            raise SwitchboardError(f"Failed to get provider '{model_config.provider}': {e}") from e
 
     def _prepare_completion_params(
         self,
@@ -269,8 +342,16 @@ class Client:
                 # Simple sync health check
                 try:
                     import asyncio
-                    loop = asyncio.get_event_loop()
-                    health = loop.run_until_complete(provider.health_check())
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # Already in an event loop, create a task
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(asyncio.run, provider.health_check())
+                            health = future.result(timeout=15)
+                    except RuntimeError:
+                        # No running loop, safe to use asyncio.run
+                        health = asyncio.run(provider.health_check())
                     results[model_name] = health
                 except Exception:
                     results[model_name] = False

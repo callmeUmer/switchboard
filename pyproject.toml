@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "switchboard-ai"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Config-driven AI model switching made simple"
 authors = [{name = "Umer Sohail", email = "mailtoumersohail@gmail.com"}]
 readme = "README.md"
