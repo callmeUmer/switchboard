@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "switchboard-ai"
-version = "0.1.0a1"
+version = "0.1.0"
 description = "Config-driven AI model switching made simple"
 authors = [{name = "Umer Sohail", email = "mailtoumersohail@gmail.com"}]
 readme = "README.md"
@@ -12,7 +12,7 @@ license = {text = "MIT"}
 requires-python = ">=3.8"
 keywords = ["ai", "llm", "openai", "anthropic", "model-switching"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",

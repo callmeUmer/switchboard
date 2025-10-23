@@ -9,6 +9,7 @@ Switchboard is a Python library that provides a unified API for switching betwee
 - **Unified API** - Single interface for OpenAI, Anthropic, and more
 - **Task-based routing** - Automatically select models based on task type
 - **Fallback chains** - Automatic failover when primary models are unavailable
+- **Dynamic model discovery** - Automatically fetches available models from provider APIs
 - **Configuration-driven** - YAML-based configuration for easy management
 - **Environment-aware** - Support for development, staging, and production configs
 - **Type-safe** - Full type hints and Pydantic validation
@@ -18,7 +19,17 @@ Switchboard is a Python library that provides a unified API for switching betwee
 ### Installation
 
 ```bash
+# Base installation
 pip install switchboard-ai
+
+# With OpenAI support
+pip install switchboard-ai[openai]
+
+# With Anthropic support
+pip install switchboard-ai[anthropic]
+
+# With all providers
+pip install switchboard-ai[all]
 ```
 
 ### Basic Usage
