@@ -3,15 +3,19 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from .config import ConfigManager, ModelConfig, get_config_manager
+from .config import ModelConfig, SwitchboardConfig, get_config_manager
 from .exceptions import (
     APIKeyError,
     ConfigurationError,
+    FallbackExhaustedError,
     ModelNotFoundError,
+    ProviderError,
     ProviderNotFoundError,
     SwitchboardError,
 )
 from .providers import CompletionResponse, get_provider
+from .providers.base import BaseProvider
+from .utils import run_coroutine_sync
 
 
 class Client:
@@ -24,12 +28,13 @@ class Client:
             config_path: Path to configuration file. If None, uses default locations.
         """
         self.config_manager = get_config_manager(config_path)
-        self._config = None
+        self._config: Optional[SwitchboardConfig] = None
 
-    def _ensure_config_loaded(self):
-        """Ensure configuration is loaded."""
+    def _ensure_config_loaded(self) -> SwitchboardConfig:
+        """Ensure configuration is loaded and return it."""
         if self._config is None:
             self._config = self.config_manager.load_config()
+        return self._config
 
     def complete(
         self,
@@ -50,55 +55,41 @@ class Client:
             CompletionResponse with generated content
 
         Raises:
-            SwitchboardError: If completion fails
-            ConfigurationError: If configuration is invalid
-            ModelNotFoundError: If specified model is not found
+            FallbackExhaustedError: If every model in the fallback chain fails
+            ConfigurationError: If configuration is invalid (including a
+                missing API key for any model in the chain — configuration
+                problems fail loudly rather than being skipped)
+            ProviderNotFoundError: If a configured provider is not registered
         """
         self._ensure_config_loaded()
 
         # Determine which model to use
         target_model = self._resolve_model(model, task)
 
-        # Get model configuration
-        model_config = self.config_manager.get_model_config(target_model)
-
-        # Get provider instance
-        provider = self._get_provider(model_config)
-
-        # Merge configuration with kwargs
-        completion_params = self._prepare_completion_params(model_config, kwargs)
-
         # Attempt completion with fallback support
         models_to_try = self._get_fallback_chain(target_model, task)
-        last_error = None
+        last_error: Optional[Exception] = None
+        attempted: List[str] = []
 
         for attempt_model in models_to_try:
+            attempt_config = self.config_manager.get_model_config(attempt_model)
+            attempt_provider = self._get_provider(attempt_config)
+            attempt_params = self._prepare_completion_params(attempt_config, kwargs)
+
             try:
-                # Get configuration for this model
-                attempt_config = self.config_manager.get_model_config(attempt_model)
-                attempt_provider = self._get_provider(attempt_config)
-
-                # Merge configuration with kwargs
-                attempt_params = self._prepare_completion_params(attempt_config, kwargs)
-
-                # Execute completion
                 return attempt_provider.complete_sync(
                     prompt=prompt, model=attempt_config.model_name, **attempt_params
                 )
-
-            except Exception as e:
+            except (ProviderError, ModelNotFoundError) as e:
+                # Provider/model failures are retryable with the next fallback;
+                # configuration errors propagate immediately above
                 last_error = e
-                # If this was the last model to try, raise FallbackExhaustedError
-                if attempt_model == models_to_try[-1]:
-                    break
-                # Otherwise, continue to next fallback
-                continue
+                attempted.append(attempt_model)
 
         # All models failed
-        from .exceptions import FallbackExhaustedError
-
         raise FallbackExhaustedError(
-            f"All fallback models failed. Last error: {last_error}"
+            f"All fallback models failed. Attempted: {attempted}. "
+            f"Last error: {last_error}"
         ) from last_error
 
     async def complete_async(
@@ -118,52 +109,42 @@ class Client:
 
         Returns:
             CompletionResponse with generated content
+
+        Raises:
+            FallbackExhaustedError: If every model in the fallback chain fails
+            ConfigurationError: If configuration is invalid (including a
+                missing API key for any model in the chain)
+            ProviderNotFoundError: If a configured provider is not registered
         """
         self._ensure_config_loaded()
 
         # Determine which model to use
         target_model = self._resolve_model(model, task)
 
-        # Get model configuration
-        model_config = self.config_manager.get_model_config(target_model)
-
-        # Get provider instance
-        provider = self._get_provider(model_config)
-
-        # Merge configuration with kwargs
-        completion_params = self._prepare_completion_params(model_config, kwargs)
-
         # Attempt completion with fallback support
         models_to_try = self._get_fallback_chain(target_model, task)
-        last_error = None
+        last_error: Optional[Exception] = None
+        attempted: List[str] = []
 
         for attempt_model in models_to_try:
+            attempt_config = self.config_manager.get_model_config(attempt_model)
+            attempt_provider = self._get_provider(attempt_config)
+            attempt_params = self._prepare_completion_params(attempt_config, kwargs)
+
             try:
-                # Get configuration for this model
-                attempt_config = self.config_manager.get_model_config(attempt_model)
-                attempt_provider = self._get_provider(attempt_config)
-
-                # Merge configuration with kwargs
-                attempt_params = self._prepare_completion_params(attempt_config, kwargs)
-
-                # Execute async completion
                 return await attempt_provider.complete(
                     prompt=prompt, model=attempt_config.model_name, **attempt_params
                 )
-
-            except Exception as e:
+            except (ProviderError, ModelNotFoundError) as e:
+                # Provider/model failures are retryable with the next fallback;
+                # configuration errors propagate immediately above
                 last_error = e
-                # If this was the last model to try, raise FallbackExhaustedError
-                if attempt_model == models_to_try[-1]:
-                    break
-                # Otherwise, continue to next fallback
-                continue
+                attempted.append(attempt_model)
 
         # All models failed
-        from .exceptions import FallbackExhaustedError
-
         raise FallbackExhaustedError(
-            f"All fallback models failed. Last error: {last_error}"
+            f"All fallback models failed. Attempted: {attempted}. "
+            f"Last error: {last_error}"
         ) from last_error
 
     def _resolve_model(self, model: Optional[str], task: Optional[str]) -> str:
@@ -175,17 +156,25 @@ class Client:
 
         Returns:
             Model name to use
+
+        Raises:
+            ConfigurationError: If the specified task is not configured
         """
         if model:
             return model
 
         if task:
             task_config = self.config_manager.get_task_config(task)
-            if task_config:
-                return task_config.primary_model
+            if task_config is None:
+                available = list(self._ensure_config_loaded().tasks.keys())
+                raise ConfigurationError(
+                    f"Task '{task}' not found in configuration. "
+                    f"Available tasks: {available}"
+                )
+            return task_config.primary_model
 
         # Fall back to default model
-        return self._config.default_model
+        return self._ensure_config_loaded().default_model
 
     def _get_fallback_chain(self, model: str, task: Optional[str]) -> List[str]:
         """Get the fallback chain for a model.
@@ -204,18 +193,17 @@ class Client:
             task_config = self.config_manager.get_task_config(task)
             if task_config and task_config.fallback_models:
                 chain.extend(task_config.fallback_models)
-                return chain
+                return list(dict.fromkeys(chain))
 
         # Otherwise use default fallback chain
-        if self._config.default_fallback:
-            # Only add fallback models that aren't already in the chain
-            for fallback_model in self._config.default_fallback:
-                if fallback_model not in chain:
-                    chain.append(fallback_model)
+        config = self._ensure_config_loaded()
+        if config.default_fallback:
+            chain.extend(config.default_fallback)
 
-        return chain
+        # De-duplicate preserving order
+        return list(dict.fromkeys(chain))
 
-    def _get_provider(self, model_config: ModelConfig):
+    def _get_provider(self, model_config: ModelConfig) -> BaseProvider:
         """Get provider instance for the given model configuration.
 
         Args:
@@ -236,7 +224,7 @@ class Client:
             provider = get_provider(
                 provider_name=model_config.provider,
                 api_key=api_key,
-                **model_config.extra_params,
+                **(model_config.extra_params or {}),
             )
 
             return provider
@@ -262,7 +250,7 @@ class Client:
         Returns:
             Merged parameters for provider call
         """
-        params = {}
+        params: Dict[str, Any] = {}
 
         # Add model config parameters
         if model_config.max_tokens is not None:
@@ -286,7 +274,7 @@ class Client:
             List of model names
         """
         self._ensure_config_loaded()
-        return list(self._config.models.keys())
+        return list(self._ensure_config_loaded().models.keys())
 
     def list_tasks(self) -> List[str]:
         """Get list of configured tasks.
@@ -295,7 +283,7 @@ class Client:
             List of task names
         """
         self._ensure_config_loaded()
-        return list(self._config.tasks.keys())
+        return list(self._ensure_config_loaded().tasks.keys())
 
     def get_model_info(self, model: str) -> Dict[str, Any]:
         """Get information about a specific model.
@@ -335,28 +323,9 @@ class Client:
             try:
                 model_config = self.config_manager.get_model_config(model_name)
                 provider = self._get_provider(model_config)
-
-                # Simple sync health check
-                try:
-                    import asyncio
-
-                    try:
-                        loop = asyncio.get_running_loop()
-                        # Already in an event loop, create a task
-                        import concurrent.futures
-
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(
-                                asyncio.run, provider.health_check()
-                            )
-                            health = future.result(timeout=15)
-                    except RuntimeError:
-                        # No running loop, safe to use asyncio.run
-                        health = asyncio.run(provider.health_check())
-                    results[model_name] = health
-                except Exception:
-                    results[model_name] = False
-
+                results[model_name] = run_coroutine_sync(
+                    provider.health_check, timeout=10
+                )
             except Exception:
                 results[model_name] = False
 
