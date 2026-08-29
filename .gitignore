@@ -56,3 +56,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local switchboard configs (may contain endpoint/routing config)
+switchboard.yaml
+switchboard.yml
+config/switchboard.yaml
+config/switchboard.yml

@@ -1,19 +1,16 @@
 # Development Configuration
-# Optimized for development with local models and cost-effective options
+# Optimized for development with cost-effective models
 
 models:
-  # Local/Dev Models (if available)
-  local-llama:
-    provider: local
-    model_name: llama-2-7b
-    api_key_env: null
+  # Cost-effective cloud models for development
+  gpt-4o-mini:
+    provider: openai
+    model_name: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
     max_tokens: 2048
     temperature: 0.7
-    timeout: 120
-    extra_params:
-      host: "http://localhost:8080"
+    timeout: 30
 
-  # Cost-effective cloud models for development
   gpt-3.5-turbo:
     provider: openai
     model_name: gpt-3.5-turbo
@@ -32,17 +29,14 @@ models:
 
 tasks:
   coding:
-    primary_model: gpt-3.5-turbo
-    fallback_models: [claude-3-haiku, local-llama]
+    primary_model: gpt-4o-mini
+    fallback_models: [claude-3-haiku, gpt-3.5-turbo]
     description: "Development coding tasks"
 
   chat:
-    primary_model: local-llama
-    fallback_models: [gpt-3.5-turbo, claude-3-haiku]
+    primary_model: claude-3-haiku
+    fallback_models: [gpt-4o-mini, gpt-3.5-turbo]
     description: "Development chat and testing"
 
-default_model: gpt-3.5-turbo
-default_fallback: [claude-3-haiku, local-llama]
-
-enable_caching: true
-cache_ttl: 1800  # 30 minutes for faster development iteration
+default_model: gpt-4o-mini
+default_fallback: [claude-3-haiku, gpt-3.5-turbo]

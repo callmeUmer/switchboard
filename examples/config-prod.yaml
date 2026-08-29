@@ -54,6 +54,3 @@ tasks:
 
 default_model: gpt-4
 default_fallback: [claude-3-opus, gpt-3.5-turbo, claude-3-sonnet]
-
-enable_caching: true
-cache_ttl: 7200  # 2 hours for production stability
