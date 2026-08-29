@@ -13,8 +13,9 @@ try:
 except ImportError:
     ANTHROPIC_AVAILABLE = False
 
-from ..exceptions import ModelNotFoundError, ProviderError
-from .base import BaseProvider, CompletionResponse
+from ..exceptions import ModelNotFoundError, ModelResponseError, ProviderError
+from ..utils import summarize_error_body
+from .base import BaseProvider, CompletionResponse, validate_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +23,22 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(BaseProvider):
     """Anthropic API provider for Claude models."""
 
+    name = "anthropic"
+    ALLOWED_CONFIG_KEYS = frozenset({"base_url", "anthropic_version", "allow_http"})
+
     def __init__(self, api_key: Optional[str] = None, **kwargs):
         """Initialize Anthropic provider.
 
         Args:
             api_key: Anthropic API key
-            **kwargs: Additional configuration
+            **kwargs: Additional configuration (allowed keys: base_url,
+                anthropic_version, allow_http)
         """
         super().__init__(api_key, **kwargs)
-        self.base_url = kwargs.get("base_url", "https://api.anthropic.com")
+        self.base_url = validate_base_url(
+            kwargs.get("base_url", "https://api.anthropic.com"),
+            allow_http=bool(kwargs.get("allow_http", False)),
+        ).rstrip("/")
         self.anthropic_version = kwargs.get("anthropic_version", "2023-06-01")
         self._cached_models: Optional[List[str]] = None
 
@@ -41,16 +49,11 @@ class AnthropicProvider(BaseProvider):
             )
 
         # Initialize Anthropic client if library is available
+        self._client: Optional[Any] = None
         if ANTHROPIC_AVAILABLE:
             self._client = Anthropic(api_key=api_key, base_url=self.base_url)
         else:
-            self._client = None
             logger.debug("Anthropic library not available, using httpx for API calls")
-
-    @property
-    def name(self) -> str:
-        """Provider name identifier."""
-        return "anthropic"
 
     def _is_valid_api_key_format(self, api_key: str) -> bool:
         """Validate Anthropic API key format.
@@ -76,7 +79,8 @@ class AnthropicProvider(BaseProvider):
 
         if not ANTHROPIC_AVAILABLE:
             logger.warning(
-                "Anthropic library not available. Using static model list. Install with: pip install anthropic"
+                "Anthropic library not available. Using static model list. "
+                "Install with: pip install anthropic"
             )
             return fallback_models
 
@@ -94,7 +98,8 @@ class AnthropicProvider(BaseProvider):
         except Exception as e:
             # Log the error but return static fallback list
             logger.warning(
-                f"Failed to fetch models from Anthropic API: {e}. Using static model list."
+                f"Failed to fetch models from Anthropic API: {e}. "
+                "Using static model list."
             )
             return fallback_models
 
@@ -107,6 +112,8 @@ class AnthropicProvider(BaseProvider):
 
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers for Anthropic API."""
+        if not self.api_key:
+            raise ProviderError("Anthropic API key is not configured")
         return {
             "x-api-key": self.api_key,
             "Content-Type": "application/json",
@@ -121,18 +128,12 @@ class AnthropicProvider(BaseProvider):
         temperature: Optional[float] = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Prepare request data for Anthropic API."""
-        # Validate model is supported
-        if not self.is_model_supported(model):
-            available_models = ", ".join(self.supported_models[:5])
-            logger.error(
-                f"Model '{model}' not supported. Available models include: {available_models}..."
-            )
-            raise ModelNotFoundError(
-                f"Model '{model}' is not supported by Anthropic provider. "
-                f"Available models include: {available_models}..."
-            )
+        """Prepare request data for Anthropic API.
 
+        Note: Model validation is done by the Anthropic API directly.
+        This allows users to use any model name, including newly released
+        models that may not be in the cached model list yet.
+        """
         # Build messages for the new Claude 3 format
         messages = [{"role": "user", "content": prompt}]
 
@@ -168,8 +169,10 @@ class AnthropicProvider(BaseProvider):
                     content = content_blocks[0].get("text", "")
                 else:
                     content = str(content_blocks)
+            elif "completion" in response_data:
+                content = response_data["completion"]
             else:
-                content = response_data.get("completion", "")
+                raise KeyError("missing 'content' or 'completion'")
 
             usage = response_data.get("usage", {})
 
@@ -189,7 +192,7 @@ class AnthropicProvider(BaseProvider):
             )
 
         except (KeyError, IndexError) as e:
-            raise ProviderError(f"Invalid response format from Anthropic: {e}")
+            raise ModelResponseError(f"Invalid response format from Anthropic: {e}")
 
     async def complete(
         self,
@@ -239,17 +242,16 @@ class AnthropicProvider(BaseProvider):
                     logger.warning("Rate limit exceeded for Anthropic API")
                     raise ProviderError("Anthropic rate limit exceeded")
                 elif response.status_code == 400:
-                    error_detail = (
-                        response.json().get("error", {}).get("message", "Bad request")
-                    )
+                    error_detail = summarize_error_body(response) or "Bad request"
                     logger.error(f"Bad request to Anthropic API: {error_detail}")
                     raise ProviderError(f"Anthropic API error: {error_detail}")
                 elif response.status_code != 200:
+                    error_detail = summarize_error_body(response)
                     logger.error(
-                        f"Anthropic API error: {response.status_code} - {response.text}"
+                        f"Anthropic API error: {response.status_code} - {error_detail}"
                     )
                     raise ProviderError(
-                        f"Anthropic API error: {response.status_code} - {response.text}"
+                        f"Anthropic API error: {response.status_code} - {error_detail}"
                     )
 
                 response_data = response.json()

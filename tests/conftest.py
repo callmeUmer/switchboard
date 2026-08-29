@@ -1,17 +1,19 @@
 """Pytest configuration and shared fixtures."""
 
-import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
 
 from switchboard.config import ConfigManager, SwitchboardConfig
+from switchboard.exceptions import ProviderError
 from switchboard.providers.base import BaseProvider, CompletionResponse
-from switchboard.providers.registry import ProviderRegistry
+
+# Fixed timestamp for deterministic assertions
+FIXED_DATETIME = datetime(2024, 1, 1, 12, 0, 0)
 
 
 @pytest.fixture
@@ -65,8 +67,6 @@ def sample_config_data():
         },
         "default_model": "test-model-1",
         "default_fallback": ["test-model-2"],
-        "enable_caching": True,
-        "cache_ttl": 3600,
     }
 
 
@@ -106,7 +106,7 @@ def mock_completion_response():
         content="Test response content",
         model="test-model",
         provider="test",
-        timestamp=pytest.mock_datetime.now(),
+        timestamp=FIXED_DATETIME,
         usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
         metadata={"test": "data"},
     )
@@ -115,16 +115,18 @@ def mock_completion_response():
 class MockProvider(BaseProvider):
     """Mock provider for testing."""
 
+    name = "test"
+    # Permissive allowlist so tests can pass arbitrary config keys
+    ALLOWED_CONFIG_KEYS = frozenset(
+        {"base_url", "custom_param", "allow_http", "organization", "config"}
+    )
+
     def __init__(self, api_key=None, **kwargs):
         super().__init__(api_key, **kwargs)
         self.call_count = 0
         self.last_params = {}
         self.response_content = "Mock response"
         self.should_fail = False
-
-    @property
-    def name(self) -> str:
-        return "test"
 
     @property
     def supported_models(self) -> list:
@@ -147,9 +149,7 @@ class MockProvider(BaseProvider):
         }
 
         if self.should_fail:
-            raise Exception("Mock provider failure")
-
-        from datetime import datetime
+            raise ProviderError("Mock provider failure")
 
         return CompletionResponse(
             content=self.response_content,
@@ -263,37 +263,10 @@ def mock_anthropic_response():
     }
 
 
-# Async testing helpers
-@pytest.fixture
-def event_loop():
-    """Create an event loop for async tests."""
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-# Coverage helpers
-@pytest.fixture(autouse=True)
-def mock_datetime(monkeypatch):
-    """Mock datetime for consistent testing."""
-    from datetime import datetime
-    from unittest.mock import Mock
-
-    mock_dt = Mock()
-    mock_dt.now.return_value = datetime(2024, 1, 1, 12, 0, 0)
-
-    # Store in pytest for access in other fixtures
-    pytest.mock_datetime = mock_dt.now.return_value
-
-    return mock_dt
-
-
 # Error simulation fixtures
 @pytest.fixture
 def failing_provider():
     """Provider that always fails for error testing."""
-    provider = MockProvider()
+    provider = MockProvider(api_key="test-key")
     provider.should_fail = True
     return provider

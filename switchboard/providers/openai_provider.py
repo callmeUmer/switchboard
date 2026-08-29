@@ -13,8 +13,9 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
-from ..exceptions import ModelNotFoundError, ProviderError
-from .base import BaseProvider, CompletionResponse
+from ..exceptions import ModelNotFoundError, ModelResponseError, ProviderError
+from ..utils import summarize_error_body
+from .base import BaseProvider, CompletionResponse, validate_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +23,22 @@ logger = logging.getLogger(__name__)
 class OpenAIProvider(BaseProvider):
     """OpenAI API provider for GPT models."""
 
+    name = "openai"
+    ALLOWED_CONFIG_KEYS = frozenset({"base_url", "organization", "allow_http"})
+
     def __init__(self, api_key: Optional[str] = None, **kwargs):
         """Initialize OpenAI provider.
 
         Args:
             api_key: OpenAI API key
-            **kwargs: Additional configuration
+            **kwargs: Additional configuration (allowed keys: base_url,
+                organization, allow_http)
         """
         super().__init__(api_key, **kwargs)
-        self.base_url = kwargs.get("base_url", "https://api.openai.com/v1")
+        self.base_url = validate_base_url(
+            kwargs.get("base_url", "https://api.openai.com/v1"),
+            allow_http=bool(kwargs.get("allow_http", False)),
+        ).rstrip("/")
         self.organization = kwargs.get("organization")
         self._cached_models: Optional[List[str]] = None
 
@@ -41,18 +49,13 @@ class OpenAIProvider(BaseProvider):
             )
 
         # Initialize OpenAI client if library is available
+        self._client: Optional[Any] = None
         if OPENAI_AVAILABLE:
             self._client = OpenAI(
                 api_key=api_key, base_url=self.base_url, organization=self.organization
             )
         else:
-            self._client = None
             logger.debug("OpenAI library not available, using httpx for API calls")
-
-    @property
-    def name(self) -> str:
-        """Provider name identifier."""
-        return "openai"
 
     def _is_valid_api_key_format(self, api_key: str) -> bool:
         """Validate OpenAI API key format.
@@ -129,7 +132,7 @@ class OpenAIProvider(BaseProvider):
         # Build messages for chat completion
         messages = [{"role": "user", "content": prompt}]
 
-        data = {
+        data: Dict[str, Any] = {
             "model": model,
             "messages": messages,
         }
@@ -171,7 +174,7 @@ class OpenAIProvider(BaseProvider):
             )
 
         except (KeyError, IndexError) as e:
-            raise ProviderError(f"Invalid response format from OpenAI: {e}")
+            raise ModelResponseError(f"Invalid response format from OpenAI: {e}")
 
     async def complete(
         self,
@@ -221,13 +224,13 @@ class OpenAIProvider(BaseProvider):
                     logger.warning("Rate limit exceeded for OpenAI API")
                     raise ProviderError("OpenAI rate limit exceeded")
                 elif response.status_code == 404:
-                    error_data = response.json().get("error", {})
-                    error_msg = error_data.get("message", f"Model '{model}' not found")
+                    error_msg = (
+                        summarize_error_body(response) or f"Model '{model}' not found"
+                    )
                     logger.error(f"Model not found: {error_msg}")
                     raise ModelNotFoundError(f"OpenAI: {error_msg}")
                 elif response.status_code == 400:
-                    error_data = response.json().get("error", {})
-                    error_msg = error_data.get("message", "Bad request")
+                    error_msg = summarize_error_body(response) or "Bad request"
                     # Check if it's a model-related error
                     if (
                         "model" in error_msg.lower()
@@ -238,11 +241,12 @@ class OpenAIProvider(BaseProvider):
                     logger.error(f"Bad request to OpenAI API: {error_msg}")
                     raise ProviderError(f"OpenAI API error: {error_msg}")
                 elif response.status_code != 200:
+                    error_msg = summarize_error_body(response)
                     logger.error(
-                        f"OpenAI API error: {response.status_code} - {response.text}"
+                        f"OpenAI API error: {response.status_code} - {error_msg}"
                     )
                     raise ProviderError(
-                        f"OpenAI API error: {response.status_code} - {response.text}"
+                        f"OpenAI API error: {response.status_code} - {error_msg}"
                     )
 
                 response_data = response.json()

@@ -11,8 +11,9 @@ Switchboard is a Python library that provides a unified API for switching betwee
 - **Fallback chains** - Automatic failover when primary models are unavailable
 - **Dynamic model discovery** - Automatically fetches available models from provider APIs
 - **Configuration-driven** - YAML-based configuration for easy management
-- **Environment-aware** - Support for development, staging, and production configs
-- **Type-safe** - Full type hints and Pydantic validation
+- **Type-safe** - Type hints and Pydantic validation
+
+Requires Python 3.10+.
 
 ## Quick Start
 
@@ -90,6 +91,23 @@ response = client.complete("Hello", model="claude-3")
 
 ## Configuration
 
+### Configuration discovery
+
+`Client()` without an explicit path looks for a config file in this order:
+
+1. `./switchboard.yaml`
+2. `./switchboard.yml`
+3. `./config/switchboard.yaml`
+4. `./config/switchboard.yml`
+5. `~/.switchboard.yaml`
+6. `~/.switchboard.yml`
+
+> **Security note:** the current working directory is searched first, so a
+> `switchboard.yaml` in an untrusted directory (a cloned repo, an extracted
+> archive) controls which endpoints your requests — and API keys — go to.
+> When running in directories you don't control, pass an explicit path:
+> `Client(config_path="/path/to/switchboard.yaml")`.
+
 ### Models
 
 Define available models with their provider configurations:
@@ -97,15 +115,27 @@ Define available models with their provider configurations:
 ```yaml
 models:
   model-name:
-    provider: openai|anthropic|local
+    provider: openai|anthropic
     model_name: actual-model-id
     api_key_env: ENV_VAR_NAME
     max_tokens: 4096
     temperature: 0.7
     timeout: 30
     extra_params:
-      custom_param: value
+      base_url: https://custom-endpoint.example.com/v1
 ```
+
+`extra_params` keys are allowlisted per provider:
+
+- **openai**: `base_url`, `organization`, `allow_http`
+- **anthropic**: `base_url`, `anthropic_version`, `allow_http`
+
+Unknown keys are rejected with a `ConfigurationError`. `base_url` must use
+**https**; plain `http` is accepted only for loopback hosts (`localhost`,
+`127.0.0.1`, `::1`) or with an explicit `allow_http: true` opt-in — otherwise
+your API key would cross the network unencrypted. API keys are never stored in
+the config file itself; only the *name* of an environment variable
+(`api_key_env`) is.
 
 ### Tasks
 
@@ -168,7 +198,7 @@ print(f"Available models: {models}")
 
 # Get model details
 info = client.get_model_info("gpt-4")
-print(f"Context length: {info['context_length']}")
+print(f"Provider: {info['provider']}, supported: {info['supported']}")
 ```
 
 ### Configuration Management
@@ -181,6 +211,26 @@ client.reload_config()
 tasks = client.list_tasks()
 print(f"Available tasks: {tasks}")
 ```
+
+### Fallback and error behavior
+
+- `complete()` tries the resolved model, then its fallback chain in order
+  (duplicates are skipped). If every model fails with a provider error, it
+  raises `FallbackExhaustedError` naming the attempted models and the last
+  error.
+- Configuration problems fail loudly instead of being skipped: a missing API
+  key for **any** model in the chain raises `APIKeyError` (a
+  `ConfigurationError`), and an unknown `task=` name raises
+  `ConfigurationError` rather than silently using the default model.
+
+## Roadmap / Backlog
+
+Planned but not yet implemented (contributions welcome):
+
+- Local/self-hosted provider (Ollama, llama.cpp-style servers)
+- Response caching
+- Environment-based config selection (`SWITCHBOARD_ENV`)
+- Retry/backoff on rate limits
 
 ## Examples
 

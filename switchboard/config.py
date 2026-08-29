@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel, Field, field_validator
 
-from .exceptions import ConfigurationError
+from .exceptions import APIKeyError, ConfigurationError
 
 
 class ModelConfig(BaseModel):
@@ -55,8 +55,6 @@ class SwitchboardConfig(BaseModel):
     default_fallback: List[str] = Field(
         default_factory=list, description="Default fallback chain"
     )
-    enable_caching: bool = Field(True, description="Enable response caching")
-    cache_ttl: int = Field(3600, description="Cache TTL in seconds")
 
     @field_validator("default_model")
     @classmethod
@@ -76,14 +74,16 @@ class SwitchboardConfig(BaseModel):
             # Check primary model
             if task_config.primary_model not in available_models:
                 raise ValueError(
-                    f'Primary model "{task_config.primary_model}" for task "{task_name}" not found in models'
+                    f'Primary model "{task_config.primary_model}" for task '
+                    f'"{task_name}" not found in models'
                 )
 
             # Check fallback models
             for fallback_model in task_config.fallback_models:
                 if fallback_model not in available_models:
                     raise ValueError(
-                        f'Fallback model "{fallback_model}" for task "{task_name}" not found in models'
+                        f'Fallback model "{fallback_model}" for task '
+                        f'"{task_name}" not found in models'
                     )
 
         return v
@@ -96,25 +96,31 @@ class ConfigManager:
         """Initialize config manager.
 
         Args:
-            config_path: Path to config file. If None, looks for config in standard locations.
+            config_path: Path to config file. If None, looks for config in
+                standard locations.
         """
         self.config_path = self._find_config_path(config_path)
         self.config: Optional[SwitchboardConfig] = None
 
-        # Load environment variables
-        load_dotenv()
+        # Load environment variables from the caller's working directory
+        # (bare load_dotenv() would resolve relative to this installed module)
+        load_dotenv(find_dotenv(usecwd=True))
 
     def _find_config_path(self, config_path: Optional[Union[str, Path]]) -> Path:
         """Find configuration file path."""
         if config_path:
             return Path(config_path)
 
-        # Look for config in standard locations
+        # Look for config in standard locations.
+        # NOTE: current-working-directory paths are searched first, so a config
+        # file in an untrusted directory controls routing — see README
+        # "Configuration discovery" for the security implications.
+        cwd = Path.cwd()
         possible_paths = [
-            Path("switchboard.yaml"),
-            Path("switchboard.yml"),
-            Path("config/switchboard.yaml"),
-            Path("config/switchboard.yml"),
+            cwd / "switchboard.yaml",
+            cwd / "switchboard.yml",
+            cwd / "config" / "switchboard.yaml",
+            cwd / "config" / "switchboard.yml",
             Path.home() / ".switchboard.yaml",
             Path.home() / ".switchboard.yml",
         ]
@@ -124,7 +130,8 @@ class ConfigManager:
                 return path
 
         raise ConfigurationError(
-            f"No configuration file found. Looked in: {', '.join(str(p) for p in possible_paths)}"
+            "No configuration file found. Looked in: "
+            + ", ".join(str(p) for p in possible_paths)
         )
 
     def load_config(self) -> SwitchboardConfig:
@@ -147,20 +154,18 @@ class ConfigManager:
 
     def get_model_config(self, model_name: str) -> ModelConfig:
         """Get configuration for a specific model."""
-        if not self.config:
-            self.load_config()
+        config = self.config or self.load_config()
 
-        if model_name not in self.config.models:
+        if model_name not in config.models:
             raise ConfigurationError(f"Model '{model_name}' not found in configuration")
 
-        return self.config.models[model_name]
+        return config.models[model_name]
 
     def get_task_config(self, task_name: str) -> Optional[TaskConfig]:
         """Get configuration for a specific task."""
-        if not self.config:
-            self.load_config()
+        config = self.config or self.load_config()
 
-        return self.config.tasks.get(task_name)
+        return config.tasks.get(task_name)
 
     def get_api_key(self, model_config: ModelConfig) -> Optional[str]:
         """Get API key for a model from environment variables."""
@@ -169,7 +174,7 @@ class ConfigManager:
 
         api_key = os.getenv(model_config.api_key_env)
         if not api_key:
-            raise ConfigurationError(
+            raise APIKeyError(
                 f"API key not found in environment variable: {model_config.api_key_env}"
             )
 

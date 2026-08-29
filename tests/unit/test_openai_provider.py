@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from switchboard.exceptions import ModelNotFoundError, ProviderError
+from switchboard.exceptions import ProviderError
 from switchboard.providers.base import CompletionResponse
 from switchboard.providers.openai_provider import OpenAIProvider
 
@@ -34,14 +34,23 @@ class TestOpenAIProvider:
         assert provider.organization == "org-123"
 
     def test_supported_models(self):
-        """Test OpenAI supported models."""
+        """Test OpenAI supported models are fetched from the API and cached."""
         provider = OpenAIProvider(api_key="test-key")
-        models = provider.supported_models
 
-        assert "gpt-4" in models
-        assert "gpt-3.5-turbo" in models
-        assert "gpt-4-turbo" in models
-        assert len(models) > 5
+        with patch.object(
+            OpenAIProvider,
+            "_fetch_available_models",
+            return_value=["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
+        ) as mock_fetch:
+            models = provider.supported_models
+
+            assert "gpt-4" in models
+            assert "gpt-3.5-turbo" in models
+            assert "gpt-4-turbo" in models
+
+            # Second access uses the cache
+            provider.supported_models
+            mock_fetch.assert_called_once()
 
     def test_requires_api_key(self):
         """Test that OpenAI provider requires API key."""
@@ -101,14 +110,16 @@ class TestOpenAIProvider:
 
         assert data == expected
 
-    def test_prepare_request_data_unsupported_model(self):
-        """Test preparing request data with unsupported model."""
-        provider = OpenAIProvider(api_key="test-key")
+    def test_prepare_request_data_unknown_model(self):
+        """Test that unknown models are not rejected client-side.
 
-        with pytest.raises(
-            ModelNotFoundError, match="Model 'unsupported' is not supported"
-        ):
-            provider._prepare_request_data("Hello", "unsupported")
+        Model validation is left to the OpenAI API so newly released models
+        work without a library update.
+        """
+        provider = OpenAIProvider(api_key="test-key")
+        data = provider._prepare_request_data("Hello", "some-brand-new-model")
+
+        assert data["model"] == "some-brand-new-model"
 
     def test_parse_response_success(self, mock_openai_response):
         """Test parsing successful OpenAI response."""
@@ -145,7 +156,7 @@ class TestOpenAIProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             response = await provider.complete(
@@ -187,7 +198,7 @@ class TestOpenAIProvider:
                 mock_client_instance.__aenter__ = AsyncMock(
                     return_value=mock_client_instance
                 )
-                mock_client_instance.__aexit__ = AsyncMock()
+                mock_client_instance.__aexit__ = AsyncMock(return_value=None)
                 mock_client.return_value = mock_client_instance
 
                 with pytest.raises(ProviderError, match=expected_error):
@@ -206,7 +217,7 @@ class TestOpenAIProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             with pytest.raises(ProviderError, match="OpenAI API request timed out"):
@@ -225,7 +236,7 @@ class TestOpenAIProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             with pytest.raises(ProviderError, match="OpenAI API request failed"):
@@ -234,13 +245,14 @@ class TestOpenAIProvider:
     def test_get_model_info(self):
         """Test getting model information."""
         provider = OpenAIProvider(api_key="test-key")
+        provider._cached_models = ["gpt-4", "gpt-3.5-turbo"]
+        provider._client = None  # Skip live model-detail lookup
 
         # Test known model
         info = provider.get_model_info("gpt-4")
         assert info["provider"] == "openai"
         assert info["model"] == "gpt-4"
         assert info["supported"] is True
-        assert "context_length" in info
 
         # Test unknown model
         info = provider.get_model_info("unknown-model")
@@ -250,6 +262,7 @@ class TestOpenAIProvider:
     async def test_health_check_success(self, mock_openai_response):
         """Test successful health check."""
         provider = OpenAIProvider(api_key="test-key")
+        provider._cached_models = ["gpt-3.5-turbo", "gpt-4"]
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -261,7 +274,7 @@ class TestOpenAIProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             health = await provider.health_check()
@@ -271,6 +284,7 @@ class TestOpenAIProvider:
     async def test_health_check_failure(self):
         """Test failed health check."""
         provider = OpenAIProvider(api_key="test-key")
+        provider._cached_models = ["gpt-3.5-turbo", "gpt-4"]
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
@@ -278,7 +292,7 @@ class TestOpenAIProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             health = await provider.health_check()

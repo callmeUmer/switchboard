@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from switchboard.exceptions import ModelNotFoundError, ProviderError
+from switchboard.exceptions import ProviderError
 from switchboard.providers.anthropic_provider import AnthropicProvider
 from switchboard.providers.base import CompletionResponse
 
@@ -34,15 +34,16 @@ class TestAnthropicProvider:
         assert provider.anthropic_version == "2024-01-01"
 
     def test_supported_models(self):
-        """Test Anthropic supported models."""
+        """Test Anthropic falls back to the static model list without a client."""
         provider = AnthropicProvider(api_key="test-key")
+        provider._client = None  # Force the static fallback list, no live fetch
+
         models = provider.supported_models
 
         assert "claude-3-opus-20240229" in models
         assert "claude-3-sonnet-20240229" in models
         assert "claude-3-haiku-20240307" in models
-        assert "claude-2.1" in models
-        assert len(models) >= 6
+        assert len(models) >= 5
 
     def test_requires_api_key(self):
         """Test that Anthropic provider requires API key."""
@@ -110,14 +111,16 @@ class TestAnthropicProvider:
 
         assert data == expected
 
-    def test_prepare_request_data_unsupported_model(self):
-        """Test preparing request data with unsupported model."""
-        provider = AnthropicProvider(api_key="test-key")
+    def test_prepare_request_data_unknown_model(self):
+        """Test that unknown models are not rejected client-side.
 
-        with pytest.raises(
-            ModelNotFoundError, match="Model 'unsupported' is not supported"
-        ):
-            provider._prepare_request_data("Hello", "unsupported")
+        Model validation is left to the Anthropic API so newly released
+        models work without a library update.
+        """
+        provider = AnthropicProvider(api_key="test-key")
+        data = provider._prepare_request_data("Hello", "some-brand-new-model")
+
+        assert data["model"] == "some-brand-new-model"
 
     def test_parse_response_success(self, mock_anthropic_response):
         """Test parsing successful Anthropic response."""
@@ -171,7 +174,7 @@ class TestAnthropicProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             response = await provider.complete(
@@ -216,7 +219,7 @@ class TestAnthropicProvider:
                 mock_client_instance.__aenter__ = AsyncMock(
                     return_value=mock_client_instance
                 )
-                mock_client_instance.__aexit__ = AsyncMock()
+                mock_client_instance.__aexit__ = AsyncMock(return_value=None)
                 mock_client.return_value = mock_client_instance
 
                 with pytest.raises(ProviderError, match=expected_error):
@@ -235,7 +238,7 @@ class TestAnthropicProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             with pytest.raises(ProviderError, match="Anthropic API request timed out"):
@@ -254,7 +257,7 @@ class TestAnthropicProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             with pytest.raises(ProviderError, match="Anthropic API request failed"):
@@ -263,14 +266,13 @@ class TestAnthropicProvider:
     def test_get_model_info(self):
         """Test getting model information."""
         provider = AnthropicProvider(api_key="test-key")
+        provider._client = None  # Static model list, no live detail lookup
 
         # Test known model
         info = provider.get_model_info("claude-3-opus-20240229")
         assert info["provider"] == "anthropic"
         assert info["model"] == "claude-3-opus-20240229"
         assert info["supported"] is True
-        assert "context_length" in info
-        assert "capabilities" in info
 
         # Test unknown model
         info = provider.get_model_info("unknown-model")
@@ -280,6 +282,7 @@ class TestAnthropicProvider:
     async def test_health_check_success(self, mock_anthropic_response):
         """Test successful health check."""
         provider = AnthropicProvider(api_key="test-key")
+        provider._client = None  # Static model list, no live fetch
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -291,7 +294,7 @@ class TestAnthropicProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             health = await provider.health_check()
@@ -301,6 +304,7 @@ class TestAnthropicProvider:
     async def test_health_check_failure(self):
         """Test failed health check."""
         provider = AnthropicProvider(api_key="test-key")
+        provider._client = None  # Static model list, no live fetch
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
@@ -308,7 +312,7 @@ class TestAnthropicProvider:
             mock_client_instance.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
-            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
             health = await provider.health_check()

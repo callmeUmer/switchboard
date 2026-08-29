@@ -1,5 +1,7 @@
 """Provider registry for managing available providers."""
 
+import hashlib
+import json
 from typing import Any, Dict, List, Optional, Type
 
 from ..exceptions import ProviderError, ProviderNotFoundError
@@ -28,28 +30,11 @@ class ProviderRegistry:
                 f"Provider class must inherit from BaseProvider, got {provider_class}"
             )
 
-        # Get provider name from class
-        if hasattr(provider_class, "name") and isinstance(
-            getattr(provider_class, "name"), property
-        ):
-            # Create temporary instance to get the name property value
-            try:
-                # Try creating with dummy API key first for providers that require it
-                temp_instance = provider_class(api_key="dummy-key")
-                provider_name = temp_instance.name
-            except Exception:
-                try:
-                    # Try without API key
-                    temp_instance = provider_class()
-                    provider_name = temp_instance.name
-                except Exception:
-                    # Fallback to class name if instantiation fails
-                    provider_name = provider_class.__name__.lower().replace(
-                        "provider", ""
-                    )
-        elif hasattr(provider_class, "name"):
-            provider_name = provider_class.name
-        else:
+        # Get provider name from the class attribute; never instantiate the
+        # class here (doing so at import time triggered SDK side effects and
+        # bogus API-key-format warnings)
+        provider_name = getattr(provider_class, "name", None)
+        if not isinstance(provider_name, str):
             provider_name = provider_class.__name__.lower().replace("provider", "")
 
         if provider_name in self._providers:
@@ -72,7 +57,8 @@ class ProviderRegistry:
         if provider_name not in self._providers:
             available = list(self._providers.keys())
             raise ProviderNotFoundError(
-                f"Provider '{provider_name}' not found. Available providers: {available}"
+                f"Provider '{provider_name}' not found. "
+                f"Available providers: {available}"
             )
 
         return self._providers[provider_name]
@@ -116,20 +102,20 @@ class ProviderRegistry:
         Returns:
             Provider instance
         """
-        # Create cache key from provider name, api_key, and config
-        # Use frozenset for stable, hashable representation
-        import hashlib
-
-        # Include API key in cache key (hash it for security)
+        # Create cache key from provider name, api_key, and config.
+        # Full SHA-256 digests: truncated hashes risk collisions that would
+        # hand one caller another caller's cached provider (and API key).
+        # The cache is unbounded but keyed by (provider, key, config) tuples
+        # that come from a finite YAML config, so growth is bounded in practice.
         api_key_hash = ""
         if api_key:
-            api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+            api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
-        config_items = sorted(kwargs.items())
-        config_str = str(config_items)
-        config_hash = hashlib.sha256(config_str.encode()).hexdigest()[:16]
+        config_str = json.dumps(kwargs, sort_keys=True, default=str)
+        config_hash = hashlib.sha256(config_str.encode()).hexdigest()
 
-        # Cache key now includes API key hash to prevent sharing providers with different keys
+        # Cache key includes the API key hash so providers with different
+        # keys are never shared
         cache_key = f"{provider_name}:{api_key_hash}:{config_hash}"
 
         if cache_key not in self._instances:
@@ -176,7 +162,7 @@ class ProviderRegistry:
 
         del self._providers[provider_name]
 
-        # Clear related cached instances (handles new cache key format with api_key_hash)
+        # Clear related cached instances
         keys_to_remove = [
             key for key in self._instances.keys() if key.split(":")[0] == provider_name
         ]
@@ -194,32 +180,23 @@ class ProviderRegistry:
         """
         provider_class = self.get_provider_class(provider_name)
 
-        # Try to get supported models (might need instantiation)
+        # Supported models generally require a configured instance (live API
+        # fetch); report an empty list rather than instantiating with a fake
+        # API key just to gather info.
+        requires_api_key = True
+        models: List[str] = []
         try:
-            # For providers that require API key, use a dummy key for info gathering
-            if hasattr(provider_class, "requires_api_key"):
-                try:
-                    temp_requires_api_key = provider_class().requires_api_key()
-                except Exception:
-                    temp_requires_api_key = True
-            else:
-                temp_requires_api_key = True
-
-            if temp_requires_api_key:
-                temp_instance = provider_class(api_key="dummy-key")
-            else:
-                temp_instance = provider_class()
-
+            temp_instance = provider_class()
+            requires_api_key = temp_instance.requires_api_key()
             models = temp_instance.supported_models
         except Exception:
-            models = []
-            temp_requires_api_key = True
+            pass
 
         return {
             "name": provider_name,
             "class": provider_class.__name__,
             "supported_models": models,
-            "requires_api_key": temp_requires_api_key,
+            "requires_api_key": requires_api_key,
         }
 
 
