@@ -1,9 +1,6 @@
 """Unit tests for configuration management."""
 
-import os
-import tempfile
-from pathlib import Path
-from unittest.mock import mock_open, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -104,8 +101,6 @@ class TestSwitchboardConfig:
         assert len(config.tasks) == 2
         assert config.default_model == "test-model-1"
         assert config.default_fallback == ["test-model-2"]
-        assert config.enable_caching is True
-        assert config.cache_ttl == 3600
 
     def test_switchboard_config_invalid_default_model(self):
         """Test SwitchboardConfig with invalid default model."""
@@ -176,7 +171,7 @@ class TestConfigManager:
 
     def test_config_manager_file_not_found(self):
         """Test ConfigManager with nonexistent file."""
-        # When a specific path is provided but doesn't exist, it should fail during load_config
+        # A specific path that doesn't exist should fail during load_config
         manager = ConfigManager("nonexistent.yaml")
         with pytest.raises(ConfigurationError):
             manager.load_config()

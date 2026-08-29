@@ -1,12 +1,19 @@
 """Unit tests for provider system."""
 
 from datetime import datetime
-from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from switchboard.exceptions import ProviderError, ProviderNotFoundError
-from switchboard.providers.base import BaseProvider, CompletionResponse
+from switchboard.exceptions import (
+    ConfigurationError,
+    ProviderError,
+    ProviderNotFoundError,
+)
+from switchboard.providers.base import (
+    BaseProvider,
+    CompletionResponse,
+    validate_base_url,
+)
 from switchboard.providers.registry import (
     ProviderRegistry,
     get_provider,
@@ -67,6 +74,8 @@ class TestBaseProvider:
 
     class ConcreteProvider(BaseProvider):
         """Concrete implementation for testing."""
+
+        ALLOWED_CONFIG_KEYS = frozenset({"custom_param", "base_url", "config"})
 
         @property
         def name(self):
@@ -390,7 +399,10 @@ class TestProviderRegistry:
 
         assert info["name"] == "test"
         assert info["class"] == "MockProvider"
-        assert "test-model-1" in info["supported_models"]
+        # MockProvider requires an API key, so info gathering cannot
+        # instantiate it and reports no models
+        assert info["supported_models"] == []
+        assert info["requires_api_key"] is True
 
 
 class TestGlobalRegistryFunctions:
@@ -409,3 +421,77 @@ class TestGlobalRegistryFunctions:
 
         assert isinstance(provider, MockProvider)
         assert provider.api_key == "test-key"
+
+
+class TestBaseUrlValidation:
+    """Test base_url scheme enforcement (credential-exfiltration guard)."""
+
+    def test_https_accepted(self):
+        assert (
+            validate_base_url("https://api.example.com/v1")
+            == "https://api.example.com/v1"
+        )
+
+    def test_http_non_loopback_rejected(self):
+        with pytest.raises(ConfigurationError, match="plain-http base_url"):
+            validate_base_url("http://evil.example.com/v1")
+
+    def test_http_loopback_accepted(self):
+        assert validate_base_url("http://localhost:8080") == "http://localhost:8080"
+        assert validate_base_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080"
+
+    def test_http_allowed_with_explicit_opt_in(self):
+        url = "http://internal-gateway:8080"
+        assert validate_base_url(url, allow_http=True) == url
+
+    def test_non_http_scheme_rejected(self):
+        with pytest.raises(ConfigurationError, match="must use https"):
+            validate_base_url("ftp://api.example.com")
+
+    def test_missing_host_rejected(self):
+        with pytest.raises(ConfigurationError, match="no host"):
+            validate_base_url("not-a-url")
+
+
+class TestExtraParamsAllowlist:
+    """Test that unknown extra_params are rejected."""
+
+    def test_unknown_extra_param_rejected(self):
+        with pytest.raises(ConfigurationError, match="Unsupported extra_params"):
+            MockProvider(api_key="test-key", totally_unknown_param="x")
+
+    def test_allowed_extra_param_accepted(self):
+        provider = MockProvider(api_key="test-key", custom_param="value")
+        assert provider.config["custom_param"] == "value"
+
+    def test_openai_provider_rejects_unknown_params(self):
+        from switchboard.providers.openai_provider import OpenAIProvider
+
+        with pytest.raises(ConfigurationError, match="Unsupported extra_params"):
+            OpenAIProvider(api_key="sk-test-xxxxxxxxxxxxxxxxxxxxx", proxies="http://x")
+
+    def test_openai_provider_rejects_http_base_url(self):
+        from switchboard.providers.openai_provider import OpenAIProvider
+
+        with pytest.raises(ConfigurationError, match="plain-http base_url"):
+            OpenAIProvider(
+                api_key="sk-test-xxxxxxxxxxxxxxxxxxxxx",
+                base_url="http://evil.example.com/v1",
+            )
+
+    def test_openai_provider_accepts_loopback_http(self):
+        from switchboard.providers.openai_provider import OpenAIProvider
+
+        provider = OpenAIProvider(
+            api_key="sk-test-xxxxxxxxxxxxxxxxxxxxx",
+            base_url="http://localhost:8080/v1",
+        )
+        assert provider.base_url == "http://localhost:8080/v1"
+
+    def test_anthropic_provider_rejects_http_base_url(self):
+        from switchboard.providers.anthropic_provider import AnthropicProvider
+
+        with pytest.raises(ConfigurationError, match="plain-http base_url"):
+            AnthropicProvider(
+                api_key="sk-ant-test-key", base_url="http://evil.example.com"
+            )

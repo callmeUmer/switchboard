@@ -1,7 +1,6 @@
 """Unit tests for Switchboard client."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -9,9 +8,8 @@ from switchboard.client import Client
 from switchboard.exceptions import (
     APIKeyError,
     ConfigurationError,
-    ModelNotFoundError,
+    FallbackExhaustedError,
     ProviderNotFoundError,
-    SwitchboardError,
 )
 from switchboard.providers.base import CompletionResponse
 
@@ -74,12 +72,12 @@ class TestClient:
         assert model == "test-model-1"  # Default model
 
     def test_resolve_model_nonexistent_task(self, config_file):
-        """Test resolving model with nonexistent task."""
+        """Test resolving model with nonexistent task raises."""
         client = Client(config_file)
         client._ensure_config_loaded()
 
-        model = client._resolve_model(None, "nonexistent-task")
-        assert model == "test-model-1"  # Falls back to default
+        with pytest.raises(ConfigurationError, match="Task 'nonexistent-task'"):
+            client._resolve_model(None, "nonexistent-task")
 
     def test_get_provider_success(
         self, config_file, mock_env_vars, registered_mock_provider
@@ -187,7 +185,7 @@ class TestClient:
         )
         provider.should_fail = True
 
-        with pytest.raises(SwitchboardError, match="Completion failed"):
+        with pytest.raises(FallbackExhaustedError, match="All fallback models failed"):
             client.complete("Test prompt", model="test-model-1")
 
     @pytest.mark.asyncio
@@ -215,7 +213,7 @@ class TestClient:
         )
         provider.should_fail = True
 
-        with pytest.raises(SwitchboardError, match="Async completion failed"):
+        with pytest.raises(FallbackExhaustedError, match="All fallback models failed"):
             await client.complete_async("Test prompt", model="test-model-1")
 
     def test_list_models(self, config_file):
