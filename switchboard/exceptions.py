@@ -31,13 +31,13 @@ class ProviderNotFoundError(SwitchboardError):
     pass
 
 
-class APIKeyError(SwitchboardError):
+class APIKeyError(ConfigurationError):
     """Raised when API key is missing or invalid."""
 
     pass
 
 
-class ModelResponseError(SwitchboardError):
+class ModelResponseError(ProviderError):
     """Raised when model returns an invalid response."""
 
     pass
