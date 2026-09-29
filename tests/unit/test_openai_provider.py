@@ -10,6 +10,12 @@ from switchboard.providers.base import CompletionResponse
 from switchboard.providers.openai_provider import OpenAIProvider
 
 
+class NotFound(Exception):
+    """Stand-in for an SDK 404 error (SDK errors expose ``status_code``)."""
+
+    status_code = 404
+
+
 class TestOpenAIProvider:
     """Test OpenAI provider functionality."""
 
@@ -34,23 +40,18 @@ class TestOpenAIProvider:
         assert provider.organization == "org-123"
 
     def test_supported_models(self):
-        """Test OpenAI supported models are fetched from the API and cached."""
+        """Test the full model list is fetched live on every access."""
         provider = OpenAIProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.list.side_effect = lambda: iter(
+            [Mock(id="gpt-4"), Mock(id="gpt-3.5-turbo")]
+        )
 
-        with patch.object(
-            OpenAIProvider,
-            "_fetch_available_models",
-            return_value=["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-        ) as mock_fetch:
-            models = provider.supported_models
+        assert provider.supported_models == ["gpt-3.5-turbo", "gpt-4"]
 
-            assert "gpt-4" in models
-            assert "gpt-3.5-turbo" in models
-            assert "gpt-4-turbo" in models
-
-            # Second access uses the cache
-            provider.supported_models
-            mock_fetch.assert_called_once()
+        # Nothing depends on the list implicitly, so it is never cached
+        provider.supported_models
+        assert provider._client.models.list.call_count == 2
 
     def test_requires_api_key(self):
         """Test that OpenAI provider requires API key."""
@@ -103,12 +104,22 @@ class TestOpenAIProvider:
         expected = {
             "model": "gpt-4",
             "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 100,
+            "max_completion_tokens": 100,
             "temperature": 0.5,
             "custom_param": "value",
         }
 
         assert data == expected
+
+    def test_prepare_request_data_custom_base_url_keeps_max_tokens(self):
+        """Test OpenAI-compatible servers still get the legacy max_tokens."""
+        provider = OpenAIProvider(
+            api_key="test-key", base_url="https://llm.example.com/v1"
+        )
+        data = provider._prepare_request_data("Hello", "local-model", max_tokens=100)
+
+        assert data["max_tokens"] == 100
+        assert "max_completion_tokens" not in data
 
     def test_prepare_request_data_unknown_model(self):
         """Test that unknown models are not rejected client-side.
@@ -140,6 +151,17 @@ class TestOpenAIProvider:
 
         with pytest.raises(ProviderError, match="Invalid response format from OpenAI"):
             provider._parse_response(invalid_response, "gpt-3.5-turbo")
+
+    def test_parse_response_null_content(self, mock_openai_response):
+        """Test a reasoning model's null content parses as an empty string."""
+        provider = OpenAIProvider(api_key="test-key")
+        mock_openai_response["choices"][0]["message"]["content"] = None
+        mock_openai_response["choices"][0]["finish_reason"] = "length"
+
+        response = provider._parse_response(mock_openai_response, "gpt-6-luna")
+
+        assert response.content == ""
+        assert response.metadata["finish_reason"] == "length"
 
     @pytest.mark.asyncio
     async def test_complete_success(self, mock_openai_response):
@@ -243,26 +265,78 @@ class TestOpenAIProvider:
                 await provider.complete("Test", "gpt-3.5-turbo")
 
     def test_get_model_info(self):
-        """Test getting model information."""
+        """Test one single-model lookup gives both support and details."""
         provider = OpenAIProvider(api_key="test-key")
-        provider._cached_models = ["gpt-4", "gpt-3.5-turbo"]
-        provider._client = None  # Skip live model-detail lookup
+        provider._client = Mock()
+        provider._client.models.retrieve.return_value = Mock(
+            id="gpt-6-luna", created=1700000000, owned_by="openai"
+        )
 
-        # Test known model
-        info = provider.get_model_info("gpt-4")
-        assert info["provider"] == "openai"
-        assert info["model"] == "gpt-4"
-        assert info["supported"] is True
+        info = provider.get_model_info("gpt-6-luna")
 
-        # Test unknown model
+        assert info == {
+            "provider": "openai",
+            "model": "gpt-6-luna",
+            "supported": True,
+            "id": "gpt-6-luna",
+            "created": 1700000000,
+            "owned_by": "openai",
+        }
+        provider._client.models.retrieve.assert_called_once_with("gpt-6-luna")
+        provider._client.models.list.assert_not_called()
+
+    def test_get_model_info_unknown_model(self):
+        """Test a 404 from the lookup means the model is not supported."""
+        provider = OpenAIProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.retrieve.side_effect = NotFound("no such model")
+
         info = provider.get_model_info("unknown-model")
-        assert info["supported"] is False
+
+        assert info == {
+            "provider": "openai",
+            "model": "unknown-model",
+            "supported": False,
+        }
+
+    def test_get_model_info_lookup_failure(self):
+        """Test a failed lookup raises instead of claiming "not supported"."""
+        provider = OpenAIProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.retrieve.side_effect = Exception("network down")
+
+        with pytest.raises(ProviderError, match="Failed to look up OpenAI model"):
+            provider.get_model_info("gpt-6-luna")
+
+    def test_is_model_supported_uses_single_lookup(self):
+        """Test support checks ask about the one model, not the full list."""
+        provider = OpenAIProvider(api_key="test-key")
+        provider._client = Mock()
+
+        assert provider.is_model_supported("gpt-6-luna") is True
+        provider._client.models.retrieve.assert_called_once_with("gpt-6-luna")
+        provider._client.models.list.assert_not_called()
+
+    def test_custom_base_url_checks_full_list(self):
+        """Test OpenAI-compatible servers are checked against the list.
+
+        They may not implement GET /models/{id}, where a 404 would wrongly
+        read as "no such model".
+        """
+        provider = OpenAIProvider(
+            api_key="test-key", base_url="https://llm.example.com/v1"
+        )
+        provider._client = Mock()
+        provider._client.models.list.side_effect = lambda: iter([Mock(id="local")])
+
+        assert provider.is_model_supported("local") is True
+        assert provider.get_model_info("other")["supported"] is False
+        provider._client.models.retrieve.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_check_success(self, mock_openai_response):
-        """Test successful health check."""
+        """Test health check probes the requested model."""
         provider = OpenAIProvider(api_key="test-key")
-        provider._cached_models = ["gpt-3.5-turbo", "gpt-4"]
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -277,14 +351,17 @@ class TestOpenAIProvider:
             mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
-            health = await provider.health_check()
+            health = await provider.health_check("gpt-3.5-turbo")
             assert health is True
+
+            request_json = mock_client_instance.post.call_args[1]["json"]
+            assert request_json["model"] == "gpt-3.5-turbo"
+            assert request_json["max_completion_tokens"] == 1
 
     @pytest.mark.asyncio
     async def test_health_check_failure(self):
         """Test failed health check."""
         provider = OpenAIProvider(api_key="test-key")
-        provider._cached_models = ["gpt-3.5-turbo", "gpt-4"]
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
@@ -295,5 +372,28 @@ class TestOpenAIProvider:
             mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
-            health = await provider.health_check()
+            health = await provider.health_check("gpt-3.5-turbo")
             assert health is False
+
+    @pytest.mark.asyncio
+    async def test_health_check_without_model_lists_models(self):
+        """Test health check with no model hits the models endpoint only."""
+        provider = OpenAIProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.list.return_value = iter([Mock(id="some-model")])
+
+        with patch("httpx.AsyncClient") as mock_client:
+            health = await provider.health_check()
+
+            assert health is True
+            mock_client.assert_not_called()  # no completion, no tokens spent
+
+    @pytest.mark.asyncio
+    async def test_health_check_without_model_failure(self):
+        """Test health check with no model fails when discovery fails."""
+        provider = OpenAIProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.list.side_effect = Exception("API Error")
+
+        health = await provider.health_check()
+        assert health is False

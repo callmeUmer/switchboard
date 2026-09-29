@@ -1,5 +1,6 @@
 """Main client for Switchboard AI model switching."""
 
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -323,8 +324,11 @@ class Client:
             try:
                 model_config = self.config_manager.get_model_config(model_name)
                 provider = self._get_provider(model_config)
+                # Probe the configured model itself rather than letting the
+                # provider pick one
                 results[model_name] = run_coroutine_sync(
-                    provider.health_check, timeout=10
+                    partial(provider.health_check, model_config.model_name),
+                    timeout=10,
                 )
             except Exception:
                 results[model_name] = False

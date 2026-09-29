@@ -43,7 +43,8 @@ class TestModelConfig:
         assert config.model_name == "test-model"
         assert config.api_key_env is None
         assert config.max_tokens is None
-        assert config.temperature == 0.7
+        # Unset so it is not sent; newer models reject non-default values
+        assert config.temperature is None
         assert config.timeout == 30
         assert config.extra_params == {}
 

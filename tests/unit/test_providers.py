@@ -1,6 +1,7 @@
 """Unit tests for provider system."""
 
 from datetime import datetime
+from unittest.mock import Mock
 
 import pytest
 
@@ -196,7 +197,24 @@ class TestBaseProvider:
         provider = self.ConcreteProvider(api_key="test")
 
         assert str(provider) == "testProvider"
-        assert repr(provider) == "testProvider(models=2)"
+        assert repr(provider) == "ConcreteProvider(name='test')"
+
+    @pytest.mark.asyncio
+    async def test_health_check_ignores_empty_text(self):
+        """Test a successful response with no text still counts as healthy.
+
+        Thinking models can spend the single probe token on reasoning.
+        """
+
+        class EmptyProvider(self.ConcreteProvider):
+            async def complete(self, prompt, model, **kwargs):
+                return CompletionResponse(
+                    content="", model=model, provider="test", timestamp=datetime.now()
+                )
+
+        provider = EmptyProvider(api_key="test")
+
+        assert await provider.health_check("test-model-1") is True
 
 
 class TestProviderRegistry:
@@ -495,3 +513,65 @@ class TestExtraParamsAllowlist:
             AnthropicProvider(
                 api_key="sk-ant-test-key", base_url="http://evil.example.com"
             )
+
+
+class LookupProvider(BaseProvider):
+    """Provider that answers support checks with a (fake) per-model lookup."""
+
+    name = "lookup"
+
+    def __init__(self, api_key=None, **kwargs):
+        super().__init__(api_key, **kwargs)
+        self.available = {"model-a"}
+        self.lookups = []
+
+    def _check_model(self, model):
+        self.lookups.append(model)
+        return model in self.available
+
+    @property
+    def supported_models(self):
+        raise AssertionError("support checks must not fetch the full list")
+
+    async def complete(self, prompt, model, **kwargs):
+        raise NotImplementedError
+
+
+class TestModelLookup:
+    """Test per-model support checks and what they remember."""
+
+    def test_confirmed_model_is_remembered(self):
+        """Test a model that exists is looked up once, then remembered."""
+        provider = LookupProvider(api_key="k")
+
+        assert provider.is_model_supported("model-a") is True
+        assert provider.is_model_supported("model-a") is True
+        assert provider.lookups == ["model-a"]
+
+    def test_missing_model_is_asked_again(self):
+        """Test a model released after a "no" is found on the next check."""
+        provider = LookupProvider(api_key="k")
+
+        assert provider.is_model_supported("model-new") is False
+
+        provider.available.add("model-new")  # provider releases it
+
+        assert provider.is_model_supported("model-new") is True
+        assert provider.lookups == ["model-new", "model-new"]
+
+    def test_lookup_errors_are_not_remembered(self):
+        """Test a failed lookup raises and is retried next time."""
+        provider = LookupProvider(api_key="k")
+        provider._check_model = Mock(side_effect=[ProviderError("down"), True])
+
+        with pytest.raises(ProviderError, match="down"):
+            provider.is_model_supported("model-a")
+
+        assert provider.is_model_supported("model-a") is True
+
+    def test_repr_does_not_contact_provider(self):
+        """Test repr never triggers a model lookup or list fetch."""
+        provider = LookupProvider(api_key="k")
+
+        assert repr(provider) == "LookupProvider(name='lookup')"
+        assert provider.lookups == []
