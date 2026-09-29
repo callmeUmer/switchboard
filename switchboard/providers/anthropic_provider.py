@@ -1,5 +1,6 @@
 """Anthropic provider implementation."""
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -15,7 +16,12 @@ except ImportError:
 
 from ..exceptions import ModelNotFoundError, ModelResponseError, ProviderError
 from ..utils import summarize_error_body
-from .base import BaseProvider, CompletionResponse, validate_base_url
+from .base import (
+    BaseProvider,
+    CompletionResponse,
+    is_not_found_error,
+    validate_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +46,6 @@ class AnthropicProvider(BaseProvider):
             allow_http=bool(kwargs.get("allow_http", False)),
         ).rstrip("/")
         self.anthropic_version = kwargs.get("anthropic_version", "2023-06-01")
-        self._cached_models: Optional[List[str]] = None
 
         # Validate API key format
         if api_key and not self._is_valid_api_key_format(api_key):
@@ -66,49 +71,75 @@ class AnthropicProvider(BaseProvider):
         """
         return api_key.startswith("sk-ant-")
 
-    def _fetch_available_models(self) -> List[str]:
-        """Fetch available models from Anthropic API."""
-        # Static fallback list
-        fallback_models = [
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-        ]
+    def _require_client(self) -> Any:
+        """Return the SDK client used for the models API.
 
-        if not ANTHROPIC_AVAILABLE:
-            logger.warning(
-                "Anthropic library not available. Using static model list. "
-                "Install with: pip install anthropic"
+        Raises:
+            ProviderError: If the anthropic library is not installed
+        """
+        if not ANTHROPIC_AVAILABLE or not self._client:
+            logger.error(
+                "Anthropic library not available. Install with: pip install anthropic"
             )
-            return fallback_models
+            raise ProviderError(
+                "Anthropic library not available. Install it with: "
+                "pip install anthropic"
+            )
+        return self._client
 
-        if not self._client:
-            logger.warning("Anthropic client not initialized. Using static model list.")
-            return fallback_models
+    def _fetch_available_models(self) -> List[str]:
+        """Fetch available models from Anthropic API.
+
+        Returns:
+            List of available model IDs from Anthropic API
+
+        Raises:
+            ProviderError: If unable to fetch models from API
+        """
+        client = self._require_client()
 
         try:
-            models_response = self._client.models.list()
-            # Get all Claude models
-            model_ids = [model.id for model in models_response.data]
+            # Iterating the page auto-paginates; .data would only hold the
+            # first page (20 models by default)
+            model_ids = [model.id for model in client.models.list()]
             logger.debug(f"Fetched {len(model_ids)} models from Anthropic API")
             return sorted(model_ids)
 
         except Exception as e:
-            # Log the error but return static fallback list
-            logger.warning(
-                f"Failed to fetch models from Anthropic API: {e}. "
-                "Using static model list."
-            )
-            return fallback_models
+            logger.error(f"Failed to fetch models from Anthropic API: {e}")
+            raise ProviderError(
+                f"Failed to fetch models from Anthropic API: {e}"
+            ) from e
+
+    def _retrieve_model(self, model: str) -> Optional[Any]:
+        """Look up a single model via the models API.
+
+        Returns:
+            The model object, or None if the API says it does not exist
+
+        Raises:
+            ProviderError: If the lookup itself fails
+        """
+        client = self._require_client()
+
+        try:
+            return client.models.retrieve(model)
+        except Exception as e:
+            if is_not_found_error(e):
+                return None
+            logger.error(f"Failed to look up Anthropic model {model!r}: {e}")
+            raise ProviderError(
+                f"Failed to look up Anthropic model {model!r}: {e}"
+            ) from e
 
     @property
     def supported_models(self) -> List[str]:
-        """List of supported Anthropic models fetched dynamically from API."""
-        if self._cached_models is None:
-            self._cached_models = self._fetch_available_models()
-        return self._cached_models
+        """All Anthropic models available to this API key, fetched live."""
+        return self._fetch_available_models()
+
+    def _check_model(self, model: str) -> bool:
+        """Ask the models API about this one model."""
+        return self._retrieve_model(model) is not None
 
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers for Anthropic API."""
@@ -134,7 +165,7 @@ class AnthropicProvider(BaseProvider):
         This allows users to use any model name, including newly released
         models that may not be in the cached model list yet.
         """
-        # Build messages for the new Claude 3 format
+        # Build messages for the Messages API
         messages = [{"role": "user", "content": prompt}]
 
         data = {
@@ -162,11 +193,17 @@ class AnthropicProvider(BaseProvider):
     ) -> CompletionResponse:
         """Parse Anthropic API response."""
         try:
-            # Handle Claude 3 message format
+            # Messages API format, with legacy Text Completions fallback
             if "content" in response_data:
                 content_blocks = response_data["content"]
-                if isinstance(content_blocks, list) and content_blocks:
-                    content = content_blocks[0].get("text", "")
+                if isinstance(content_blocks, list):
+                    # Thinking models put thinking blocks before the text
+                    # (and tool use can split text), so join every text block
+                    content = "".join(
+                        block.get("text", "")
+                        for block in content_blocks
+                        if block.get("type") == "text"
+                    )
                 else:
                     content = str(content_blocks)
             elif "completion" in response_data:
@@ -273,53 +310,48 @@ class AnthropicProvider(BaseProvider):
             raise ProviderError(f"Unexpected error in Anthropic provider: {e}") from e
 
     def get_model_info(self, model: str) -> Dict[str, Any]:
-        """Get information about an Anthropic model."""
-        base_info = super().get_model_info(model)
+        """Get information about an Anthropic model.
 
-        # Fetch model details from Anthropic API if available
-        if ANTHROPIC_AVAILABLE and self._client:
-            try:
-                model_data = self._client.models.retrieve(model)
-                base_info.update(
-                    {
-                        "id": model_data.id,
-                        "display_name": model_data.display_name,
-                        "created_at": model_data.created_at,
-                    }
-                )
-            except Exception:
-                # If we can't fetch details, just return base info
-                pass
+        One models-API lookup answers both whether the model exists and its
+        details.
 
-        return base_info
+        Raises:
+            ProviderError: If the lookup fails
+        """
+        info: Dict[str, Any] = {
+            "provider": self.name,
+            "model": model,
+            "supported": False,
+        }
 
-    async def health_check(self) -> bool:
-        """Check if Anthropic provider is healthy."""
-        try:
-            # Use the first available model for health check
-            if not self.supported_models:
-                logger.warning("No supported models available for health check")
-                return False
-
-            # Try to use a known stable model, fallback to first available
-            preferred_models = ["claude-3-haiku-20240307", "claude-3-5-haiku-20241022"]
-            test_model = None
-
-            for preferred in preferred_models:
-                if preferred in self.supported_models:
-                    test_model = preferred
-                    break
-
-            if not test_model:
-                test_model = self.supported_models[0]
-
-            logger.debug(f"Running health check with model: {test_model}")
-
-            # Simple test with minimal tokens
-            response = await self.complete(
-                prompt="Hi", model=test_model, max_tokens=1, timeout=10
+        model_data = self._retrieve_model(model)
+        if model_data is not None:
+            self._known_models.add(model)
+            info.update(
+                {
+                    "supported": True,
+                    "id": model_data.id,
+                    "display_name": model_data.display_name,
+                    "created_at": model_data.created_at,
+                }
             )
-            return bool(response.content)
+
+        return info
+
+    async def health_check(self, model: Optional[str] = None) -> bool:
+        """Check if Anthropic provider is healthy.
+
+        Args:
+            model: Model to probe with a minimal completion. If omitted, the
+                models endpoint is queried instead (no tokens spent), which
+                checks connectivity and credentials without picking a model.
+        """
+        if model:
+            return await super().health_check(model)
+
+        try:
+            models = await asyncio.to_thread(self._fetch_available_models)
+            return bool(models)
         except Exception as e:
             logger.debug(f"Health check failed: {e}")
             return False

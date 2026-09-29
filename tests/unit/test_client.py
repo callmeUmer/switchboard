@@ -276,6 +276,20 @@ class TestClient:
         assert "test-model-1" in results
         assert results["test-model-1"] is True
 
+    def test_health_check_probes_configured_model(
+        self, config_file, mock_env_vars, registered_mock_provider
+    ):
+        """Test health check probes the configured model, not a provider pick."""
+        client = Client(config_file)
+
+        results = client.health_check("test-model-2")
+
+        assert results["test-model-2"] is True
+        provider = registered_mock_provider.get_or_create_provider(
+            "test", api_key="test-api-key-12345"
+        )
+        assert provider.last_params["model"] == "test-model-2"
+
     def test_health_check_all_models(
         self, config_file, mock_env_vars, registered_mock_provider
     ):

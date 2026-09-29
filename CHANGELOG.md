@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Providers no longer hardcode any model names. Model names now live only in
+  your YAML config.
+- Model support checks (`is_model_supported()`, `get_model_info()`) now ask
+  the provider about the one model in question (`GET /v1/models/{id}`) instead
+  of fetching and caching the full model list, so answers are always current:
+  newly released models are found immediately and retired ones stop being
+  reported. Confirmed models are remembered for the provider's lifetime;
+  missing ones are asked about again. `get_model_info()` makes a single API
+  call where it previously made two. OpenAI-compatible servers behind a custom
+  `base_url` are still checked against their full model list.
+- `supported_models` is fetched live on each access instead of being cached
+  for the provider's lifetime; nothing in the library reads it implicitly any
+  more.
+- **Breaking:** `get_model_info()` on the built-in providers raises
+  `ProviderError` when the lookup fails (network error, SDK not installed)
+  instead of returning partial info.
+- **Breaking:** `temperature` no longer defaults to `0.7`; it is omitted from
+  requests unless configured. Current Claude models and OpenAI reasoning models
+  reject non-default sampling parameters, so the old default made every
+  request to them fail. Set `temperature` explicitly to keep the old behavior.
+- **Breaking:** the Anthropic provider no longer falls back to a static
+  (outdated) list of Claude 3 models when discovery fails. Like the OpenAI
+  provider, it raises `ProviderError` when the `anthropic` package is not
+  installed or the models API call fails. Completions are unaffected.
+- The OpenAI provider sends `max_tokens` as `max_completion_tokens` to
+  `api.openai.com` (the old parameter is deprecated and rejected by reasoning
+  models). Custom `base_url` servers still receive `max_tokens`.
+- `BaseProvider.health_check()` accepts an optional `model`. The OpenAI and
+  Anthropic providers probe that model with a 1-token completion; with no
+  model they query the models endpoint instead (no tokens spent). A successful
+  response now counts as healthy even if it contains no text.
+- Example configs and README use current models (`claude-opus-5-5`,
+  `claude-sonnet-5-5`, `claude-haiku-4-5`, `gpt-6-astra`, `gpt-6-sol`,
+  `gpt-6-luna`) under role-based names, so upgrading is a one-line change.
+
+### Fixed
+- `Client.health_check()` now checks the configured model itself. Previously
+  providers ignored it and probed their own hardcoded "preferred" model (e.g.
+  checking a `gpt-4` entry actually called `gpt-3.5-turbo`).
+- Anthropic responses from thinking models returned empty content, because
+  only the first content block (a `thinking` block) was read. All `text`
+  blocks are now joined.
+- OpenAI responses with `null` content (a reasoning model that used its whole
+  token budget) now parse as an empty string.
+- Anthropic model discovery now reads every page of the models API instead of
+  only the first 20 models.
+- `repr()` of a provider no longer fetches the model list (a network call
+  that could raise); it now shows the class and provider name.
+
 ## [0.2.0] - 2026-08-29
 
 ### Security

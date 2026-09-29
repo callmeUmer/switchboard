@@ -39,27 +39,25 @@ pip install switchboard-ai[all]
 
 ```yaml
 models:
-  gpt-4:
+  openai-smart:
     provider: openai
-    model_name: gpt-4
+    model_name: gpt-6-astra
     api_key_env: OPENAI_API_KEY
-    max_tokens: 4096
-    temperature: 0.7
+    max_tokens: 16000
 
-  claude-3:
+  claude-smart:
     provider: anthropic
-    model_name: claude-3-sonnet-20240229
+    model_name: claude-opus-5-5
     api_key_env: ANTHROPIC_API_KEY
-    max_tokens: 4096
-    temperature: 0.7
+    max_tokens: 16000
 
 tasks:
   coding:
-    primary_model: gpt-4
-    fallback_models: [claude-3]
+    primary_model: openai-smart
+    fallback_models: [claude-smart]
     description: Code generation and programming
 
-default_model: gpt-4
+default_model: openai-smart
 ```
 
 2. Set your API keys:
@@ -86,7 +84,7 @@ response = client.complete("Write a Python function", task="coding")
 print(f"Used model: {response.model}")
 
 # Override model for specific request
-response = client.complete("Hello", model="claude-3")
+response = client.complete("Hello", model="claude-smart")
 ```
 
 ## Configuration
@@ -119,11 +117,22 @@ models:
     model_name: actual-model-id
     api_key_env: ENV_VAR_NAME
     max_tokens: 4096
-    temperature: 0.7
+    temperature: 0.7  # optional; omitted from requests when unset
     timeout: 30
     extra_params:
       base_url: https://custom-endpoint.example.com/v1
 ```
+
+The key under `models:` is the name your code and tasks refer to; `model_name`
+is the provider's model ID. Naming entries by role (`claude-smart`,
+`openai-fast`) rather than by model ID means upgrading to a newer model is a
+one-line `model_name` change.
+
+`temperature` has no default. Newer models (current Claude models, OpenAI
+reasoning models) reject non-default sampling parameters, so it is only sent
+when you set it. For OpenAI, `max_tokens` is sent as `max_completion_tokens`
+to `api.openai.com` (the old name is deprecated and rejected by reasoning
+models) and as `max_tokens` to a custom `base_url`.
 
 `extra_params` keys are allowlisted per provider:
 
@@ -136,6 +145,24 @@ Unknown keys are rejected with a `ConfigurationError`. `base_url` must use
 your API key would cross the network unencrypted. API keys are never stored in
 the config file itself; only the *name* of an environment variable
 (`api_key_env`) is.
+
+### Model discovery
+
+Switchboard does not ship a list of model names, and it does not keep one up
+to date in the background either. Completions never check whether a model
+exists; the provider's API does that, so a model released today works as soon
+as you put it in your config.
+
+When you ask whether a model exists (`get_model_info()`'s `supported` field),
+Switchboard asks the provider about that one model
+(`GET /v1/models/{id}`), so the answer is always current. A model confirmed to
+exist is remembered for the life of the provider; a missing one is asked about
+again next time, in case it has just been released. For OpenAI-compatible
+servers behind a custom `base_url`, which may not implement that endpoint,
+Switchboard checks the server's full model list instead.
+
+Model lookups use the provider's SDK: `pip install switchboard-ai[openai]` /
+`[anthropic]`.
 
 ### Tasks
 
@@ -178,10 +205,13 @@ asyncio.run(main())
 
 ### Health Checks
 
+Each check sends a 1-token completion to the model configured for that entry
+(its `model_name`), so it verifies that exact model is reachable with your key.
+
 ```python
 # Check specific model
-health = client.health_check("gpt-4")
-print(f"GPT-4 healthy: {health['gpt-4']}")
+health = client.health_check("claude-smart")
+print(f"Claude healthy: {health['claude-smart']}")
 
 # Check all models
 health = client.health_check()
@@ -197,7 +227,7 @@ models = client.list_models()
 print(f"Available models: {models}")
 
 # Get model details
-info = client.get_model_info("gpt-4")
+info = client.get_model_info("claude-smart")
 print(f"Provider: {info['provider']}, supported: {info['supported']}")
 ```
 

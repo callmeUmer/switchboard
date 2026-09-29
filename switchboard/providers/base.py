@@ -4,7 +4,7 @@ import ipaddress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Set
 from urllib.parse import urlsplit
 
 from ..exceptions import ConfigurationError, ProviderError
@@ -61,6 +61,15 @@ def validate_base_url(url: str, allow_http: bool = False) -> str:
         f"base_url must use https (got {url!r}); plain http is allowed only "
         "for loopback hosts or with 'allow_http: true' in extra_params."
     )
+
+
+def is_not_found_error(error: BaseException) -> bool:
+    """Whether an SDK error is an HTTP 404 (e.g. an unknown model ID).
+
+    Checks ``status_code`` rather than SDK exception classes so it works
+    across SDK versions and for any provider SDK.
+    """
+    return getattr(error, "status_code", None) == 404
 
 
 @dataclass
@@ -121,6 +130,10 @@ class BaseProvider(ABC):
             )
         self.api_key = api_key
         self.config = kwargs
+        # Models confirmed to exist. Only positive answers are remembered:
+        # models rarely disappear mid-process, but a model that is missing
+        # now may be released a minute later.
+        self._known_models: Set[str] = set()
         self._validate_configuration()
 
     @property
@@ -211,11 +224,31 @@ class BaseProvider(ABC):
     def is_model_supported(self, model: str) -> bool:
         """Check if model is supported by this provider.
 
+        Asks about this one model (see ``_check_model``) rather than keeping
+        a full model list current. A confirmed model is remembered for the
+        provider's lifetime; a missing one is asked about again next time.
+
         Args:
             model: Model name to check
 
         Returns:
             True if model is supported, False otherwise
+
+        Raises:
+            ProviderError: If the provider cannot be asked (e.g. network error)
+        """
+        if model in self._known_models:
+            return True
+        if self._check_model(model):
+            self._known_models.add(model)
+            return True
+        return False
+
+    def _check_model(self, model: str) -> bool:
+        """Ask the provider whether a single model exists.
+
+        The default looks the model up in ``supported_models``; providers
+        with a single-model lookup endpoint override this.
         """
         return model in self.supported_models
 
@@ -234,21 +267,30 @@ class BaseProvider(ABC):
             "supported": self.is_model_supported(model),
         }
 
-    async def health_check(self) -> bool:
+    async def health_check(self, model: Optional[str] = None) -> bool:
         """Check if the provider is healthy and accessible.
+
+        Args:
+            model: Model to probe with a minimal completion. If omitted, the
+                first entry of ``supported_models`` is used.
 
         Returns:
             True if provider is healthy, False otherwise
         """
         try:
-            # Simple test completion
-            response = await self.complete(
+            if not model:
+                models = self.supported_models
+                model = models[0] if models else ""
+            # A successful response proves the model is reachable with this
+            # key. Its text is not checked: a thinking model can spend the
+            # single token on reasoning and return no text at all.
+            await self.complete(
                 prompt="Hello",
-                model=self.supported_models[0] if self.supported_models else "",
+                model=model,
                 max_tokens=1,
                 timeout=10,
             )
-            return bool(response.content)
+            return True
         except Exception:
             return False
 
@@ -257,5 +299,9 @@ class BaseProvider(ABC):
         return f"{self.name}Provider"
 
     def __repr__(self) -> str:
-        """Detailed string representation of the provider."""
-        return f"{self.name}Provider(models={len(self.supported_models)})"
+        """Detailed string representation of the provider.
+
+        Never contacts the provider: a repr must not make network calls or
+        raise.
+        """
+        return f"{self.__class__.__name__}(name={self.name!r})"

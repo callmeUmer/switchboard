@@ -10,6 +10,12 @@ from switchboard.providers.anthropic_provider import AnthropicProvider
 from switchboard.providers.base import CompletionResponse
 
 
+class NotFound(Exception):
+    """Stand-in for an SDK 404 error (SDK errors expose ``status_code``)."""
+
+    status_code = 404
+
+
 class TestAnthropicProvider:
     """Test Anthropic provider functionality."""
 
@@ -34,16 +40,36 @@ class TestAnthropicProvider:
         assert provider.anthropic_version == "2024-01-01"
 
     def test_supported_models(self):
-        """Test Anthropic falls back to the static model list without a client."""
+        """Test the full model list (all pages) is fetched live."""
         provider = AnthropicProvider(api_key="test-key")
-        provider._client = None  # Force the static fallback list, no live fetch
+        provider._client = Mock()
+        # Iterating the SDK page walks every page, not just .data
+        provider._client.models.list.side_effect = lambda: iter(
+            [Mock(id="model-b"), Mock(id="model-a"), Mock(id="model-c")]
+        )
 
-        models = provider.supported_models
+        assert provider.supported_models == ["model-a", "model-b", "model-c"]
 
-        assert "claude-3-opus-20240229" in models
-        assert "claude-3-sonnet-20240229" in models
-        assert "claude-3-haiku-20240307" in models
-        assert len(models) >= 5
+        # Nothing depends on the list implicitly, so it is never cached
+        provider.supported_models
+        assert provider._client.models.list.call_count == 2
+
+    def test_supported_models_without_client(self):
+        """Test there is no hardcoded fallback list when discovery is unavailable."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = None
+
+        with pytest.raises(ProviderError, match="Anthropic library not available"):
+            provider.supported_models
+
+    def test_supported_models_fetch_failure(self):
+        """Test API errors during discovery surface as ProviderError."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.list.side_effect = Exception("boom")
+
+        with pytest.raises(ProviderError, match="Failed to fetch models"):
+            provider.supported_models
 
     def test_requires_api_key(self):
         """Test that Anthropic provider requires API key."""
@@ -135,6 +161,28 @@ class TestAnthropicProvider:
         assert response.provider == "anthropic"
         assert response.usage["input_tokens"] == 25
         assert response.metadata["id"] == "msg_test123"
+
+    def test_parse_response_skips_thinking_blocks(self, mock_anthropic_response):
+        """Test text is taken from text blocks, not a leading thinking block."""
+        provider = AnthropicProvider(api_key="test-key")
+        mock_anthropic_response["content"] = [
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+            {"type": "text", "text": "Hello "},
+            {"type": "text", "text": "world"},
+        ]
+
+        response = provider._parse_response(mock_anthropic_response, "claude-opus-5-5")
+
+        assert response.content == "Hello world"
+
+    def test_parse_response_no_text_blocks(self, mock_anthropic_response):
+        """Test a response with no text (e.g. max_tokens hit) parses as empty."""
+        provider = AnthropicProvider(api_key="test-key")
+        mock_anthropic_response["content"] = []
+
+        response = provider._parse_response(mock_anthropic_response, "claude-opus-5-5")
+
+        assert response.content == ""
 
     def test_parse_response_legacy_format(self):
         """Test parsing legacy completion format."""
@@ -264,25 +312,72 @@ class TestAnthropicProvider:
                 await provider.complete("Test", "claude-3-haiku-20240307")
 
     def test_get_model_info(self):
-        """Test getting model information."""
+        """Test one single-model lookup gives both support and details."""
         provider = AnthropicProvider(api_key="test-key")
-        provider._client = None  # Static model list, no live detail lookup
+        provider._client = Mock()
+        provider._client.models.retrieve.return_value = Mock(
+            id="claude-opus-5-5",
+            display_name="Claude Opus 5.5",
+            created_at="2026-08-01T00:00:00Z",
+        )
 
-        # Test known model
-        info = provider.get_model_info("claude-3-opus-20240229")
-        assert info["provider"] == "anthropic"
-        assert info["model"] == "claude-3-opus-20240229"
-        assert info["supported"] is True
+        info = provider.get_model_info("claude-opus-5-5")
 
-        # Test unknown model
+        assert info == {
+            "provider": "anthropic",
+            "model": "claude-opus-5-5",
+            "supported": True,
+            "id": "claude-opus-5-5",
+            "display_name": "Claude Opus 5.5",
+            "created_at": "2026-08-01T00:00:00Z",
+        }
+        provider._client.models.retrieve.assert_called_once_with("claude-opus-5-5")
+        provider._client.models.list.assert_not_called()
+
+    def test_get_model_info_unknown_model(self):
+        """Test a 404 from the lookup means the model is not supported."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.retrieve.side_effect = NotFound("no such model")
+
         info = provider.get_model_info("unknown-model")
-        assert info["supported"] is False
+
+        assert info == {
+            "provider": "anthropic",
+            "model": "unknown-model",
+            "supported": False,
+        }
+
+    def test_get_model_info_lookup_failure(self):
+        """Test a failed lookup raises instead of claiming "not supported"."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.retrieve.side_effect = Exception("network down")
+
+        with pytest.raises(ProviderError, match="Failed to look up Anthropic model"):
+            provider.get_model_info("claude-opus-5-5")
+
+    def test_get_model_info_without_client(self):
+        """Test there is no hardcoded answer when the SDK is unavailable."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = None
+
+        with pytest.raises(ProviderError, match="Anthropic library not available"):
+            provider.get_model_info("claude-opus-5-5")
+
+    def test_is_model_supported_uses_single_lookup(self):
+        """Test support checks ask about the one model, not the full list."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = Mock()
+
+        assert provider.is_model_supported("claude-opus-5-5") is True
+        provider._client.models.retrieve.assert_called_once_with("claude-opus-5-5")
+        provider._client.models.list.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_check_success(self, mock_anthropic_response):
-        """Test successful health check."""
+        """Test health check probes the requested model."""
         provider = AnthropicProvider(api_key="test-key")
-        provider._client = None  # Static model list, no live fetch
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -297,14 +392,17 @@ class TestAnthropicProvider:
             mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
-            health = await provider.health_check()
+            health = await provider.health_check("claude-3-haiku-20240307")
             assert health is True
+
+            request_json = mock_client_instance.post.call_args[1]["json"]
+            assert request_json["model"] == "claude-3-haiku-20240307"
+            assert request_json["max_tokens"] == 1
 
     @pytest.mark.asyncio
     async def test_health_check_failure(self):
         """Test failed health check."""
         provider = AnthropicProvider(api_key="test-key")
-        provider._client = None  # Static model list, no live fetch
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_client_instance = Mock()
@@ -315,5 +413,28 @@ class TestAnthropicProvider:
             mock_client_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_client_instance
 
-            health = await provider.health_check()
+            health = await provider.health_check("claude-3-haiku-20240307")
             assert health is False
+
+    @pytest.mark.asyncio
+    async def test_health_check_without_model_lists_models(self):
+        """Test health check with no model hits the models endpoint only."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.list.return_value = iter([Mock(id="some-model")])
+
+        with patch("httpx.AsyncClient") as mock_client:
+            health = await provider.health_check()
+
+            assert health is True
+            mock_client.assert_not_called()  # no completion, no tokens spent
+
+    @pytest.mark.asyncio
+    async def test_health_check_without_model_failure(self):
+        """Test health check with no model fails when discovery fails."""
+        provider = AnthropicProvider(api_key="test-key")
+        provider._client = Mock()
+        provider._client.models.list.side_effect = Exception("API Error")
+
+        health = await provider.health_check()
+        assert health is False

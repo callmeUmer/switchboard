@@ -20,7 +20,12 @@ class ModelConfig(BaseModel):
         None, description="Environment variable for API key"
     )
     max_tokens: Optional[int] = Field(None, description="Maximum tokens for completion")
-    temperature: Optional[float] = Field(0.7, description="Temperature for generation")
+    # No default: newer models (e.g. current Claude and OpenAI reasoning
+    # models) reject a non-default temperature, so only send one when the
+    # config asks for it
+    temperature: Optional[float] = Field(
+        None, description="Temperature for generation (omitted when unset)"
+    )
     timeout: Optional[int] = Field(30, description="Request timeout in seconds")
     extra_params: Optional[Dict[str, Any]] = Field(
         default_factory=dict, description="Additional provider-specific parameters"

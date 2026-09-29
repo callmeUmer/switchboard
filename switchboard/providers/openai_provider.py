@@ -1,8 +1,10 @@
 """OpenAI provider implementation."""
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -15,7 +17,12 @@ except ImportError:
 
 from ..exceptions import ModelNotFoundError, ModelResponseError, ProviderError
 from ..utils import summarize_error_body
-from .base import BaseProvider, CompletionResponse, validate_base_url
+from .base import (
+    BaseProvider,
+    CompletionResponse,
+    is_not_found_error,
+    validate_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +47,7 @@ class OpenAIProvider(BaseProvider):
             allow_http=bool(kwargs.get("allow_http", False)),
         ).rstrip("/")
         self.organization = kwargs.get("organization")
-        self._cached_models: Optional[List[str]] = None
+        self._is_official_api = urlsplit(self.base_url).hostname == "api.openai.com"
 
         # Validate API key format
         if api_key and not self._is_valid_api_key_format(api_key):
@@ -68,6 +75,21 @@ class OpenAIProvider(BaseProvider):
         """
         return api_key.startswith("sk-") and len(api_key) > 20
 
+    def _require_client(self) -> Any:
+        """Return the SDK client used for the models API.
+
+        Raises:
+            ProviderError: If the openai library is not installed
+        """
+        if not OPENAI_AVAILABLE or not self._client:
+            logger.error(
+                "OpenAI library not available. Install with: pip install openai"
+            )
+            raise ProviderError(
+                "OpenAI library not available. Install it with: pip install openai"
+            )
+        return self._client
+
     def _fetch_available_models(self) -> List[str]:
         """Fetch available models from OpenAI API.
 
@@ -77,18 +99,12 @@ class OpenAIProvider(BaseProvider):
         Raises:
             ProviderError: If unable to fetch models from API
         """
-        if not OPENAI_AVAILABLE or not self._client:
-            logger.error(
-                "OpenAI library not available. Install with: pip install openai"
-            )
-            raise ProviderError(
-                "OpenAI library not available. Install it with: pip install openai"
-            )
+        client = self._require_client()
 
         try:
-            models_response = self._client.models.list()
-            # Get all model IDs - let the user decide which models to use
-            model_ids = [model.id for model in models_response.data]
+            # Get all model IDs - let the user decide which models to use.
+            # Iterating the page (rather than .data) follows any pagination.
+            model_ids = [model.id for model in client.models.list()]
             logger.debug(f"Fetched {len(model_ids)} models from OpenAI API")
             return sorted(model_ids)
 
@@ -96,12 +112,40 @@ class OpenAIProvider(BaseProvider):
             logger.error(f"Failed to fetch models from OpenAI API: {e}")
             raise ProviderError(f"Failed to fetch models from OpenAI API: {e}") from e
 
+    def _retrieve_model(self, model: str) -> Optional[Any]:
+        """Look up a single model via the models API.
+
+        Returns:
+            The model object, or None if the API says it does not exist
+
+        Raises:
+            ProviderError: If the lookup itself fails
+        """
+        client = self._require_client()
+
+        try:
+            return client.models.retrieve(model)
+        except Exception as e:
+            if is_not_found_error(e):
+                return None
+            logger.error(f"Failed to look up OpenAI model {model!r}: {e}")
+            raise ProviderError(f"Failed to look up OpenAI model {model!r}: {e}") from e
+
     @property
     def supported_models(self) -> List[str]:
-        """List of supported OpenAI models fetched dynamically from API."""
-        if self._cached_models is None:
-            self._cached_models = self._fetch_available_models()
-        return self._cached_models
+        """All OpenAI models available to this API key, fetched live."""
+        return self._fetch_available_models()
+
+    def _check_model(self, model: str) -> bool:
+        """Ask the models API about this one model.
+
+        OpenAI-compatible servers behind a custom base_url may not implement
+        the single-model endpoint (a 404 there would wrongly mean "no such
+        model"), so those check the full list instead.
+        """
+        if not self._is_official_api:
+            return super()._check_model(model)
+        return self._retrieve_model(model) is not None
 
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers for OpenAI API."""
@@ -139,7 +183,13 @@ class OpenAIProvider(BaseProvider):
 
         # Add optional parameters
         if max_tokens is not None:
-            data["max_tokens"] = max_tokens
+            # OpenAI deprecated max_tokens and its reasoning models reject it;
+            # OpenAI-compatible servers behind a custom base_url may only
+            # understand the old name, so keep it for them
+            if self._is_official_api:
+                data["max_completion_tokens"] = max_tokens
+            else:
+                data["max_tokens"] = max_tokens
 
         if temperature is not None:
             data["temperature"] = temperature
@@ -156,7 +206,9 @@ class OpenAIProvider(BaseProvider):
     ) -> CompletionResponse:
         """Parse OpenAI API response."""
         try:
-            content = response_data["choices"][0]["message"]["content"]
+            # content is null when a reasoning model spends the whole token
+            # budget on reasoning
+            content = response_data["choices"][0]["message"]["content"] or ""
             usage = response_data.get("usage", {})
 
             return CompletionResponse(
@@ -266,53 +318,52 @@ class OpenAIProvider(BaseProvider):
             raise ProviderError(f"Unexpected error in OpenAI provider: {e}") from e
 
     def get_model_info(self, model: str) -> Dict[str, Any]:
-        """Get information about an OpenAI model."""
-        base_info = super().get_model_info(model)
+        """Get information about an OpenAI model.
 
-        # Fetch model details from OpenAI API if available
-        if OPENAI_AVAILABLE and self._client:
-            try:
-                model_data = self._client.models.retrieve(model)
-                base_info.update(
-                    {
-                        "id": model_data.id,
-                        "created": model_data.created,
-                        "owned_by": model_data.owned_by,
-                    }
-                )
-            except Exception:
-                # If we can't fetch details, just return base info
-                pass
+        On api.openai.com, one models-API lookup answers both whether the
+        model exists and its details.
 
-        return base_info
+        Raises:
+            ProviderError: If the lookup fails
+        """
+        if not self._is_official_api:
+            # No single-model endpoint to rely on; see _check_model
+            return super().get_model_info(model)
 
-    async def health_check(self) -> bool:
-        """Check if OpenAI provider is healthy."""
-        try:
-            # Use the first available model for health check
-            if not self.supported_models:
-                logger.warning("No supported models available for health check")
-                return False
+        info: Dict[str, Any] = {
+            "provider": self.name,
+            "model": model,
+            "supported": False,
+        }
 
-            # Try to use a known stable, fast model for health checks
-            preferred_models = ["gpt-3.5-turbo", "gpt-4o-mini", "gpt-4"]
-            test_model = None
-
-            for preferred in preferred_models:
-                if preferred in self.supported_models:
-                    test_model = preferred
-                    break
-
-            if not test_model:
-                test_model = self.supported_models[0]
-
-            logger.debug(f"Running health check with model: {test_model}")
-
-            # Simple test with minimal tokens
-            response = await self.complete(
-                prompt="Hi", model=test_model, max_tokens=1, timeout=10
+        model_data = self._retrieve_model(model)
+        if model_data is not None:
+            self._known_models.add(model)
+            info.update(
+                {
+                    "supported": True,
+                    "id": model_data.id,
+                    "created": model_data.created,
+                    "owned_by": model_data.owned_by,
+                }
             )
-            return bool(response.content)
+
+        return info
+
+    async def health_check(self, model: Optional[str] = None) -> bool:
+        """Check if OpenAI provider is healthy.
+
+        Args:
+            model: Model to probe with a minimal completion. If omitted, the
+                models endpoint is queried instead (no tokens spent), which
+                checks connectivity and credentials without picking a model.
+        """
+        if model:
+            return await super().health_check(model)
+
+        try:
+            models = await asyncio.to_thread(self._fetch_available_models)
+            return bool(models)
         except Exception as e:
             logger.debug(f"Health check failed: {e}")
             return False
